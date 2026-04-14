@@ -34,7 +34,6 @@ import (
 	"time"
 
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/version"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
 	"k8s.io/component-base/featuregate"
@@ -692,11 +691,7 @@ func setupTestCase(t testing.TB, tc *testCase, featureGates map[featuregate.Feat
 	// quit *before* restoring klog settings.
 	framework.GoleakCheck(t)
 
-	// We need to set emulation version for QueueingHints feature gate, which is locked at 1.34.
-	// Only emulate v1.33 when QueueingHints is explicitly disabled.
-	if qhEnabled, exists := featureGates[features.SchedulerQueueingHints]; exists && !qhEnabled {
-		featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.33"))
-	} else if _, found := featureGates[features.OpportunisticBatching]; !found {
+	if _, found := featureGates[features.OpportunisticBatching]; !found {
 		if featureGates == nil {
 			featureGates = map[featuregate.Feature]bool{}
 		}
@@ -727,12 +722,10 @@ func setupTestCase(t testing.TB, tc *testCase, featureGates map[featuregate.Feat
 	timeout := 30 * time.Minute
 	tCtx = tCtx.WithTimeout(timeout, fmt.Sprintf("timed out after the %s per-test timeout", timeout))
 
-	if utilfeature.DefaultFeatureGate.Enabled(features.SchedulerQueueingHints) {
-		registerQHintMetrics()
-		t.Cleanup(func() {
-			unregisterQHintMetrics()
-		})
-	}
+	registerQHintMetrics()
+	t.Cleanup(func() {
+		unregisterQHintMetrics()
+	})
 
 	return setupClusterForWorkload(tCtx, tc.SchedulerConfigPath, featureGates, opts)
 }
@@ -863,11 +856,9 @@ func RunBenchmarkPerfScheduling(b *testing.B, configFile string, topicName strin
 						}
 					}
 
-					if featureGates[features.SchedulerQueueingHints] {
-						// In any case, we should make sure InFlightEvents is empty after running the scenario.
-						if err = checkEmptyInFlightEvents(); err != nil {
-							tCtx.Errorf("%s: %s", w.Name, err)
-						}
+					// In any case, we should make sure InFlightEvents is empty after running the scenario.
+					if err = checkEmptyInFlightEvents(); err != nil {
+						tCtx.Errorf("%s: %s", w.Name, err)
 					}
 
 					// Reset metrics to prevent metrics generated in current workload gets
@@ -953,11 +944,9 @@ func RunIntegrationPerfScheduling(t *testing.T, configFile string, options ...Sc
 						tCtx.Fatalf("Error running workload %s: %s", w.Name, err)
 					}
 
-					if featureGates[features.SchedulerQueueingHints] {
-						// In any case, we should make sure InFlightEvents is empty after running the scenario.
-						if err = checkEmptyInFlightEvents(); err != nil {
-							tCtx.Errorf("%s: %s", w.Name, err)
-						}
+					// In any case, we should make sure InFlightEvents is empty after running the scenario.
+					if err = checkEmptyInFlightEvents(); err != nil {
+						tCtx.Errorf("%s: %s", w.Name, err)
 					}
 
 					// Reset metrics to prevent metrics generated in current workload gets

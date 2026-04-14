@@ -56,23 +56,7 @@
     podTemplatePath: ../templates/pod-with-claim-template.yaml
     collectMetrics: true
   workloads:
-  - name: fast
-    featureGates:
-      SchedulerQueueingHints: false
-    labels: [integration-test, short]
-    params:
-      # This testcase runs through all code paths without
-      # taking too long overall.
-      nodesWithDRA: 1
-      nodesWithoutDRA: 1
-      resourceSlices: 10
-      initClaims: 10
-      measurePods: 10
-      steadyState: false
-      duration: 0s # unused
   - name: fast_QueueingHintsEnabled
-    featureGates:
-      SchedulerQueueingHints: true
     labels: [integration-test, short]
     params:
       # This testcase runs through all code paths without
@@ -125,20 +109,7 @@
     podTemplatePath: ../templates/pod-with-claim-template.yaml
     collectMetrics: true
   workloads:
-  - name: fast
-    featureGates:
-      SchedulerQueueingHints: false
-    labels: [integration-test, short]
-    params:
-      # This testcase runs through all code paths without
-      # taking too long overall.
-      nodesWithDRA: 1
-      nodesWithoutDRA: 1
-      resourceSlices: 1
-      measurePods: 1
   - name: fast_QueueingHintsEnabled
-    featureGates:
-      SchedulerQueueingHints: true
     labels: [integration-test, short]
     params:
       # This testcase runs through all code paths without

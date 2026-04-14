@@ -148,18 +148,7 @@ const (
 	// the previous rejection from noderesources plugin can be resolved.
 	// this plugin would implement QueueingHint for Pod/Update event
 	// that returns Queue when such label changes are made in unscheduled Pods.
-	Pod EventResource = "Pod"
-
-	// A note about NodeAdd event and UpdateNodeTaint event:
-	// When QHint is disabled, NodeAdd often isn't worked expectedly because of the internal feature called preCheck.
-	// It's definitely not something expected for plugin developers,
-	// and registering UpdateNodeTaint event is the only mitigation for now.
-	// So, kube-scheduler registers UpdateNodeTaint event for plugins that has NodeAdded event, but don't have UpdateNodeTaint event.
-	// It has a bad impact for the requeuing efficiency though, a lot better than some Pods being stuck in the
-	// unschedulable pod pool.
-	// This problematic preCheck feature is disabled when QHint is enabled,
-	// and eventually will be removed along with QHint graduation.
-	// See: https://github.com/kubernetes/kubernetes/issues/110175
+	Pod 									EventResource = "Pod"
 	Node                  EventResource = "Node"
 	PersistentVolume      EventResource = "PersistentVolume"
 	PersistentVolumeClaim EventResource = "PersistentVolumeClaim"

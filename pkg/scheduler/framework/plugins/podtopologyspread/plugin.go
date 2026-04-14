@@ -68,7 +68,6 @@ type PodTopologySpread struct {
 	statefulSets                                 appslisters.StatefulSetLister
 	enableNodeInclusionPolicyInPodTopologySpread bool
 	enableMatchLabelKeysInPodTopologySpread      bool
-	enableSchedulingQueueHint                    bool
 	enableTaintTolerationComparisonOperators     bool
 }
 
@@ -120,7 +119,6 @@ func New(_ context.Context, plArgs runtime.Object, h fwk.Handle, fts feature.Fea
 		defaultConstraints: args.DefaultConstraints,
 		enableNodeInclusionPolicyInPodTopologySpread: fts.EnableNodeInclusionPolicyInPodTopologySpread,
 		enableMatchLabelKeysInPodTopologySpread:      fts.EnableMatchLabelKeysInPodTopologySpread,
-		enableSchedulingQueueHint:                    fts.EnableSchedulingQueueHint,
 		enableTaintTolerationComparisonOperators:     fts.EnableTaintTolerationComparisonOperators,
 	}
 	if args.DefaultingType == config.SystemDefaulting {
@@ -154,18 +152,13 @@ func (pl *PodTopologySpread) setListers(factory informers.SharedInformerFactory)
 // EventsToRegister returns the possible events that may make a Pod
 // failed by this plugin schedulable.
 func (pl *PodTopologySpread) EventsToRegister(_ context.Context) ([]fwk.ClusterEventWithHint, error) {
-	podActionType := fwk.Add | fwk.UpdatePodLabel | fwk.Delete
-	if pl.enableSchedulingQueueHint {
-		// When the QueueingHint feature is enabled, the scheduling queue uses Pod/Update Queueing Hint
-		// to determine whether a Pod's update makes the Pod schedulable or not.
-		// https://github.com/kubernetes/kubernetes/pull/122234
-		// (If not, the scheduling queue always retries the unschedulable Pods when they're updated.)
-		//
-		// The Pod rejected by this plugin can be schedulable when the Pod has a spread constraint with NodeTaintsPolicy:Honor
-		// and has got a new toleration.
-		// So, we add UpdatePodToleration here only when QHint is enabled.
-		podActionType = fwk.Add | fwk.UpdatePodLabel | fwk.UpdatePodToleration | fwk.Delete
-	}
+	// The scheduling queue uses Pod/Update Queueing Hint to determine whether a Pod's update makes
+	// the Pod schedulable or not.
+	// https://github.com/kubernetes/kubernetes/pull/122234
+	//
+	// The Pod rejected by this plugin can be schedulable when the Pod has a spread constraint with NodeTaintsPolicy:Honor
+	// and has got a new toleration.
+	podActionType := fwk.Add | fwk.UpdatePodLabel | fwk.UpdatePodToleration | fwk.Delete
 
 	return []fwk.ClusterEventWithHint{
 		// All ActionType includes the following events:

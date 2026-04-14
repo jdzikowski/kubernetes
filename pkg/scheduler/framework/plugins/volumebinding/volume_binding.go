@@ -108,16 +108,7 @@ func (pl *VolumeBinding) EventsToRegister(_ context.Context) ([]fwk.ClusterEvent
 	// Pods may fail to find available PVs because the node labels do not
 	// match the storage class's allowed topologies or PV's node affinity.
 	// A new or updated node may make pods schedulable.
-	//
-	// A note about UpdateNodeTaint event:
-	// Ideally, it's supposed to register only Add | UpdateNodeLabel because UpdateNodeTaint will never change the result from this plugin.
-	// But, we may miss Node/Add event due to preCheck, and we decided to register UpdateNodeTaint | UpdateNodeLabel for all plugins registering Node/Add.
-	// See: https://github.com/kubernetes/kubernetes/issues/109437
-	nodeActionType := fwk.Add | fwk.UpdateNodeLabel | fwk.UpdateNodeTaint
-	if pl.fts.EnableSchedulingQueueHint {
-		// When scheduling queue hint is enabled, we don't use the problematic preCheck and don't need to register UpdateNodeTaint event.
-		nodeActionType = fwk.Add | fwk.UpdateNodeLabel
-	}
+	nodeActionType := fwk.Add | fwk.UpdateNodeLabel
 	events := []fwk.ClusterEventWithHint{
 		// Pods may fail because of missing or mis-configured storage class
 		// (e.g., allowedTopologies, volumeBindingMode), and hence may become

@@ -36,17 +36,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/apimachinery/pkg/util/wait"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	clientset "k8s.io/client-go/kubernetes"
 	listersv1 "k8s.io/client-go/listers/core/v1"
-	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	corev1helpers "k8s.io/component-helpers/scheduling/corev1"
 	"k8s.io/klog/v2"
 	configv1 "k8s.io/kube-scheduler/config/v1"
 	fwk "k8s.io/kube-scheduler/framework"
-	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/scheduler"
 	schedulerconfig "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	configtesting "k8s.io/kubernetes/pkg/scheduler/apis/config/testing"
@@ -2854,37 +2850,25 @@ func TestPreEnqueuePluginEventsToRegister(t *testing.T) {
 		withEvents bool
 		// count is the expected number of calls to PreEnqueue().
 		count             int
-		queueHintEnabled  []bool
-		expectedScheduled []bool
+		expectedScheduled bool
 	}{
 		{
-			name:       "preEnqueue plugin without event registered",
-			withEvents: false,
-			count:      2,
-			// This test case doesn't expect that the pod is scheduled again after the pod is updated
-			// when queuehint is enabled, because it doesn't register any events in EventsToRegister.
-			queueHintEnabled:  []bool{false, true},
-			expectedScheduled: []bool{true, false},
+			name:              "preEnqueue plugin without event registered",
+			withEvents:        false,
+			count:             2,
+			expectedScheduled: false,
 		},
 		{
 			name:              "preEnqueue plugin with event registered",
 			withEvents:        true,
 			count:             3,
-			queueHintEnabled:  []bool{false, true},
-			expectedScheduled: []bool{true, true},
+			expectedScheduled: true,
 		},
 	}
 
 	for _, tt := range tests {
-		for i := 0; i < len(tt.queueHintEnabled); i++ {
-			queueHintEnabled := tt.queueHintEnabled[i]
-			expectedScheduled := tt.expectedScheduled[i]
-
-			t.Run(tt.name+fmt.Sprintf(" queueHint(%v)", queueHintEnabled), func(t *testing.T) {
-				if !queueHintEnabled {
-					featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.33"))
-					featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.SchedulerQueueingHints, false)
-				}
+		t.Run(tt.name, func(t *testing.T) {
+			expectedScheduled := tt.expectedScheduled
 
 				testContext := testutils.InitTestAPIServer(t, "preenqueue-plugin", nil)
 				// use new plugin every time to clear counts
@@ -3017,6 +3001,5 @@ func TestPreEnqueuePluginEventsToRegister(t *testing.T) {
 					return
 				}
 			})
-		}
 	}
 }

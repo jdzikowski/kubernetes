@@ -44,7 +44,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/apimachinery/pkg/util/wait"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
@@ -1273,35 +1272,25 @@ func TestSchedulerScheduleOne(t *testing.T) {
 	}
 
 	// Test with QueueingHints, AsyncAPICalls and NominatedNodeNameForExpectation feature gates
-	for _, qHintEnabled := range []bool{true, false} {
-		for _, item := range table {
-			asyncAPICallsEnabled := []bool{true, false}
-			if item.asyncAPICallsEnabled != nil {
-				asyncAPICallsEnabled = []bool{*item.asyncAPICallsEnabled}
+	for _, item := range table {
+		asyncAPICallsEnabled := []bool{true, false}
+		if item.asyncAPICallsEnabled != nil {
+			asyncAPICallsEnabled = []bool{*item.asyncAPICallsEnabled}
+		}
+		for _, asyncAPICallsEnabled := range asyncAPICallsEnabled {
+			nominatedNodeNameForExpectationEnabled := []bool{true, false}
+			if item.nominatedNodeNameForExpectationEnabled != nil {
+				nominatedNodeNameForExpectationEnabled = []bool{*item.nominatedNodeNameForExpectationEnabled}
 			}
-			for _, asyncAPICallsEnabled := range asyncAPICallsEnabled {
-				nominatedNodeNameForExpectationEnabled := []bool{true, false}
-				if item.nominatedNodeNameForExpectationEnabled != nil {
-					nominatedNodeNameForExpectationEnabled = []bool{*item.nominatedNodeNameForExpectationEnabled}
+			for _, nominatedNodeNameForExpectationEnabled := range nominatedNodeNameForExpectationEnabled {
+				scheduleAsPodGroup := []bool{true, false}
+				if item.scheduleAsPodGroup != nil {
+					scheduleAsPodGroup = []bool{*item.scheduleAsPodGroup}
 				}
-				for _, nominatedNodeNameForExpectationEnabled := range nominatedNodeNameForExpectationEnabled {
-					scheduleAsPodGroup := []bool{true, false}
-					if item.scheduleAsPodGroup != nil {
-						scheduleAsPodGroup = []bool{*item.scheduleAsPodGroup}
-					}
-					// Test scheduling scenarios treating the pod as individual or part of a pod group.
-					for _, scheduleAsPodGroup := range scheduleAsPodGroup {
-						if !qHintEnabled && (asyncAPICallsEnabled || nominatedNodeNameForExpectationEnabled || scheduleAsPodGroup) {
-							// If the QHint feature gate is disabled, NominatedNodeNameForExpectation, SchedulerAsyncAPICalls and GenericWorkload cannot be enabled
-							// because that means users set the emulation version to 1.33 or later.
-							continue
-						}
-						t.Run(fmt.Sprintf("%s (QueueingHints: %v, AsyncAPICalls: %v, NominatedNodeNameForExpectation: %v, Schedule as PodGroup: %v)", item.name,
-							qHintEnabled, asyncAPICallsEnabled, nominatedNodeNameForExpectationEnabled, scheduleAsPodGroup), func(t *testing.T) {
-							if !qHintEnabled {
-								featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.33"))
-								featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.SchedulerQueueingHints, false)
-							}
+				// Test scheduling scenarios treating the pod as individual or part of a pod group.
+				for _, scheduleAsPodGroup := range scheduleAsPodGroup {
+					t.Run(fmt.Sprintf("%s (AsyncAPICalls: %v, NominatedNodeNameForExpectation: %v, Schedule as PodGroup: %v)", item.name,
+						asyncAPICallsEnabled, nominatedNodeNameForExpectationEnabled, scheduleAsPodGroup), func(t *testing.T) {
 							if scheduleAsPodGroup {
 								// When scheduling pod as a pod group, GenericWorkload feature gate has to be enabled.
 								featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.GenericWorkload, true)
@@ -1315,7 +1304,6 @@ func TestSchedulerScheduleOne(t *testing.T) {
 				}
 			}
 		}
-	}
 }
 
 type constSigPluginConfig struct {
@@ -1697,14 +1685,9 @@ func TestScheduleOneMarksPodAsProcessedBeforePreBind(t *testing.T) {
 		},
 	}
 
-	for _, qHintEnabled := range []bool{true, false} {
-		for _, asyncAPICallsEnabled := range []bool{true, false} {
-			for _, item := range table {
-				t.Run(fmt.Sprintf("%s (Queueing hints enabled: %v, Async API calls enabled: %v)", item.name, qHintEnabled, asyncAPICallsEnabled), func(t *testing.T) {
-					if !qHintEnabled {
-						featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.33"))
-						featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.SchedulerQueueingHints, false)
-					}
+	for _, asyncAPICallsEnabled := range []bool{true, false} {
+		for _, item := range table {
+			t.Run(fmt.Sprintf("%s (Async API calls enabled: %v)", item.name, asyncAPICallsEnabled), func(t *testing.T) {
 					logger, ctx := ktesting.NewTestContext(t)
 					var gotError error
 					var gotPod *v1.Pod
@@ -1843,11 +1826,11 @@ func TestScheduleOneMarksPodAsProcessedBeforePreBind(t *testing.T) {
 					if item.expectError == nil && gotCallsToFailureHandler != 0 {
 						t.Errorf("expected 0 calls to FailureHandlerFn, got %v", gotCallsToFailureHandler)
 					}
-					if (item.expectPodIsInFlightAtFailureHandler && qHintEnabled) != gotPodIsInFlightAtFailureHandler {
+					if item.expectPodIsInFlightAtFailureHandler != gotPodIsInFlightAtFailureHandler {
 						t.Errorf("unexpected pod being in flight in FailureHandlerFn, expected %v but got %v.",
 							item.expectPodIsInFlightAtFailureHandler, gotPodIsInFlightAtFailureHandler)
 					}
-					if (item.expectPodIsInFlightAtWaitOnPermit && qHintEnabled) != gotPodIsInFlightAtWaitOnPermit {
+					if item.expectPodIsInFlightAtWaitOnPermit != gotPodIsInFlightAtWaitOnPermit {
 						t.Errorf("unexpected pod being in flight at start of WaitOnPermit, expected %v but got %v",
 							item.expectPodIsInFlightAtWaitOnPermit, gotPodIsInFlightAtWaitOnPermit)
 					}
@@ -1863,7 +1846,6 @@ func TestScheduleOneMarksPodAsProcessedBeforePreBind(t *testing.T) {
 					}
 					stopFunc()
 				})
-			}
 		}
 	}
 }

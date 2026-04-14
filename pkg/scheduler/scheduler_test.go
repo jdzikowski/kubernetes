@@ -652,11 +652,10 @@ const (
 
 func Test_buildQueueingHintMap(t *testing.T) {
 	tests := []struct {
-		name                string
-		plugins             []fwk.Plugin
-		want                map[fwk.ClusterEvent][]*internalqueue.QueueingHintFunction
-		featuregateDisabled bool
-		wantErr             error
+		name    string
+		plugins []fwk.Plugin
+		want    map[fwk.ClusterEvent][]*internalqueue.QueueingHintFunction
+		wantErr error
 	}{
 		{
 			name:    "filter without EnqueueExtensions plugin",
@@ -713,22 +712,6 @@ func Test_buildQueueingHintMap(t *testing.T) {
 			},
 		},
 		{
-			name:                "node and pod plugin (featuregate is disabled)",
-			plugins:             []fwk.Plugin{&fakeNodePlugin{}, &fakePodPlugin{}},
-			featuregateDisabled: true,
-			want: map[fwk.ClusterEvent][]*internalqueue.QueueingHintFunction{
-				{Resource: fwk.Pod, ActionType: fwk.Add}: {
-					{PluginName: fakePod, QueueingHintFn: defaultQueueingHintFn}, // default queueing hint due to disabled feature gate.
-				},
-				{Resource: fwk.Node, ActionType: fwk.Add}: {
-					{PluginName: fakeNode, QueueingHintFn: defaultQueueingHintFn}, // default queueing hint due to disabled feature gate.
-				},
-				{Resource: fwk.Node, ActionType: fwk.UpdateNodeTaint}: {
-					{PluginName: fakeNode, QueueingHintFn: defaultQueueingHintFn}, // When Node/Add is registered, Node/UpdateNodeTaint is automatically registered.
-				},
-			},
-		},
-		{
 			name:    "register plugin with empty event",
 			plugins: []fwk.Plugin{&emptyEventPlugin{}},
 			want:    map[fwk.ClusterEvent][]*internalqueue.QueueingHintFunction{},
@@ -758,11 +741,6 @@ func Test_buildQueueingHintMap(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.featuregateDisabled {
-				featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, feature.DefaultFeatureGate, version.MustParse("1.33"))
-				featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.SchedulerQueueingHints, false)
-			}
-
 			logger, ctx := ktesting.NewTestContext(t)
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
@@ -836,7 +814,6 @@ func Test_UnionedGVKs(t *testing.T) {
 		plugins                         schedulerapi.PluginSet
 		want                            map[fwk.EventResource]fwk.ActionType
 		enableInPlacePodVerticalScaling bool
-		enableSchedulerQueueingHints    bool
 		enableDynamicResourceAllocation bool
 		enableNodeDeclaredFeatures      bool
 		enableGangScheduling            bool
@@ -890,7 +867,6 @@ func Test_UnionedGVKs(t *testing.T) {
 			enableGangScheduling:            true,
 			enableInPlacePodVerticalScaling: true,
 			enableDynamicResourceAllocation: true,
-			enableSchedulerQueueingHints:    true,
 		},
 		{
 			name: "node plugin",
@@ -948,37 +924,8 @@ func Test_UnionedGVKs(t *testing.T) {
 			},
 			want: map[fwk.EventResource]fwk.ActionType{},
 		},
-		{
-			name:    "plugins with default profile (No feature gate enabled)",
-			plugins: schedulerapi.PluginSet{Enabled: defaults.PluginsV1.MultiPoint.Enabled},
-			want: map[fwk.EventResource]fwk.ActionType{
-				fwk.Pod:                   fwk.Add | fwk.UpdatePodLabel | fwk.Delete,
-				fwk.Node:                  fwk.Add | fwk.UpdateNodeAllocatable | fwk.UpdateNodeLabel | fwk.UpdateNodeTaint | fwk.Delete,
-				fwk.CSINode:               fwk.All - fwk.Delete,
-				fwk.CSIDriver:             fwk.Update,
-				fwk.CSIStorageCapacity:    fwk.All - fwk.Delete,
-				fwk.PersistentVolume:      fwk.All - fwk.Delete,
-				fwk.PersistentVolumeClaim: fwk.All - fwk.Delete,
-				fwk.StorageClass:          fwk.All - fwk.Delete,
-				fwk.VolumeAttachment:      fwk.Delete,
-			},
-		},
-		{
-			name:    "plugins with default profile (InPlacePodVerticalScaling: enabled)",
-			plugins: schedulerapi.PluginSet{Enabled: defaults.PluginsV1.MultiPoint.Enabled},
-			want: map[fwk.EventResource]fwk.ActionType{
-				fwk.Pod:                   fwk.Add | fwk.UpdatePodLabel | fwk.UpdatePodScaleDown | fwk.Delete,
-				fwk.Node:                  fwk.Add | fwk.UpdateNodeAllocatable | fwk.UpdateNodeLabel | fwk.UpdateNodeTaint | fwk.Delete,
-				fwk.CSINode:               fwk.All - fwk.Delete,
-				fwk.CSIDriver:             fwk.Update,
-				fwk.CSIStorageCapacity:    fwk.All - fwk.Delete,
-				fwk.PersistentVolume:      fwk.All - fwk.Delete,
-				fwk.PersistentVolumeClaim: fwk.All - fwk.Delete,
-				fwk.StorageClass:          fwk.All - fwk.Delete,
-				fwk.VolumeAttachment:      fwk.Delete,
-			},
-			enableInPlacePodVerticalScaling: true,
-		},
+
+
 		{
 			name:    "plugins with default profile (queueingHint/InPlacePodVerticalScaling: enabled)",
 			plugins: schedulerapi.PluginSet{Enabled: defaults.PluginsV1.MultiPoint.Enabled},
@@ -994,27 +941,8 @@ func Test_UnionedGVKs(t *testing.T) {
 				fwk.VolumeAttachment:      fwk.Delete,
 			},
 			enableInPlacePodVerticalScaling: true,
-			enableSchedulerQueueingHints:    true,
 		},
-		{
-			name:    "plugins with default profile (DynamicResourceAllocation: enabled)",
-			plugins: schedulerapi.PluginSet{Enabled: defaults.PluginsV1.MultiPoint.Enabled},
-			want: map[fwk.EventResource]fwk.ActionType{
-				fwk.Pod:                   fwk.Add | fwk.UpdatePodLabel | fwk.UpdatePodGeneratedResourceClaim | fwk.Delete,
-				fwk.Node:                  fwk.Add | fwk.UpdateNodeAllocatable | fwk.UpdateNodeLabel | fwk.UpdateNodeTaint | fwk.Delete,
-				fwk.CSINode:               fwk.All - fwk.Delete,
-				fwk.CSIDriver:             fwk.Update,
-				fwk.CSIStorageCapacity:    fwk.All - fwk.Delete,
-				fwk.PersistentVolume:      fwk.All - fwk.Delete,
-				fwk.PersistentVolumeClaim: fwk.All - fwk.Delete,
-				fwk.StorageClass:          fwk.All - fwk.Delete,
-				fwk.VolumeAttachment:      fwk.Delete,
-				fwk.DeviceClass:           fwk.All - fwk.Delete,
-				fwk.ResourceClaim:         fwk.All - fwk.Delete,
-				fwk.ResourceSlice:         fwk.All - fwk.Delete,
-			},
-			enableDynamicResourceAllocation: true,
-		},
+
 		{
 			name:    "plugins with default profile (queueingHint/DynamicResourceAllocation: enabled)",
 			plugins: schedulerapi.PluginSet{Enabled: defaults.PluginsV1.MultiPoint.Enabled},
@@ -1033,7 +961,6 @@ func Test_UnionedGVKs(t *testing.T) {
 				fwk.ResourceSlice:         fwk.All - fwk.Delete,
 			},
 			enableDynamicResourceAllocation: true,
-			enableSchedulerQueueingHints:    true,
 		},
 		{
 			name:    "plugins with default profile (NodeDeclaredFeatures: enabled)",
@@ -1055,7 +982,6 @@ func Test_UnionedGVKs(t *testing.T) {
 				fwk.ResourceSlice:         fwk.All - fwk.Delete,
 			},
 			enableDynamicResourceAllocation: true,
-			enableSchedulerQueueingHints:    true,
 			enableNodeDeclaredFeatures:      true,
 			enableInPlacePodVerticalScaling: true,
 		},
@@ -1080,14 +1006,13 @@ func Test_UnionedGVKs(t *testing.T) {
 			enableGangScheduling:            true,
 			enableInPlacePodVerticalScaling: true,
 			enableDynamicResourceAllocation: true,
-			enableSchedulerQueueingHints:    true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pluginConfig := defaults.PluginConfigsV1
 
-			if !tt.enableSchedulerQueueingHints || !tt.enableDynamicResourceAllocation {
+			if !tt.enableDynamicResourceAllocation {
 				// Set emulated version before setting other feature gates, since it can impact feature dependencies.
 				featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, feature.DefaultFeatureGate, version.MustParse("1.33"))
 			} else if !tt.enableInPlacePodVerticalScaling {
@@ -1114,20 +1039,6 @@ func Test_UnionedGVKs(t *testing.T) {
 				features.InPlacePodVerticalScaling: tt.enableInPlacePodVerticalScaling,
 				features.DynamicResourceAllocation: tt.enableDynamicResourceAllocation,
 			})
-			if !tt.enableSchedulerQueueingHints {
-				featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.SchedulerQueueingHints, false)
-				// The test uses defaults.PluginConfigsV1, which contains the filter timeout.
-				// With emulation of 1.33, the DRASchedulerFilterTimeout feature gets disabled
-				// and also cannot be enabled ("pre-alpha"), which makes the config invalid.
-				// To avoid this, we have to patch the config.
-				pluginConfig = slices.Clone(pluginConfig)
-				for i := range pluginConfig {
-					if pluginConfig[i].Name == "DynamicResources" {
-						pluginConfig[i].Args = &schedulerapi.DynamicResourcesArgs{}
-						break
-					}
-				}
-			}
 
 			_, ctx := ktesting.NewTestContext(t)
 			ctx, cancel := context.WithCancel(ctx)

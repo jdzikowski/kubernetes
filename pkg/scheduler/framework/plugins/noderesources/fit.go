@@ -95,7 +95,6 @@ type Fit struct {
 	ignoredResourceGroups                         sets.Set[string]
 	enableInPlacePodVerticalScaling               bool
 	enableSidecarContainers                       bool
-	enableSchedulingQueueHint                     bool
 	enablePodLevelResources                       bool
 	enableDRAExtendedResource                     bool
 	enableInPlacePodLevelResourcesVerticalScaling bool
@@ -238,7 +237,6 @@ func NewFit(_ context.Context, plArgs runtime.Object, h fwk.Handle, fts feature.
 		ignoredResourceGroups:                         sets.New(args.IgnoredResourceGroups...),
 		enableInPlacePodVerticalScaling:               fts.EnableInPlacePodVerticalScaling,
 		enableSidecarContainers:                       fts.EnableSidecarContainers,
-		enableSchedulingQueueHint:                     fts.EnableSchedulingQueueHint,
 		handle:                                        h,
 		enablePodLevelResources:                       fts.EnablePodLevelResources,
 		enableDRAExtendedResource:                     fts.EnableDRAExtendedResource,
@@ -375,16 +373,7 @@ func (f *Fit) EventsToRegister(_ context.Context) ([]fwk.ClusterEventWithHint, e
 		podActionType |= fwk.UpdatePodScaleDown
 	}
 
-	// A note about UpdateNodeTaint/UpdateNodeLabel event:
-	// Ideally, it's supposed to register only Add | UpdateNodeAllocatable because the only resource update could change the node resource fit plugin's result.
-	// But, we may miss Node/Add event due to preCheck, and we decided to register UpdateNodeTaint | UpdateNodeLabel for all plugins registering Node/Add.
-	// See: https://github.com/kubernetes/kubernetes/issues/109437
-	nodeActionType := fwk.Add | fwk.UpdateNodeAllocatable | fwk.UpdateNodeTaint | fwk.UpdateNodeLabel
-	if f.enableSchedulingQueueHint {
-		// preCheck is not used when QHint is enabled, and hence Update event isn't necessary.
-		nodeActionType = fwk.Add | fwk.UpdateNodeAllocatable
-	}
-
+	nodeActionType := fwk.Add | fwk.UpdateNodeAllocatable
 	events := []fwk.ClusterEventWithHint{
 		{Event: fwk.ClusterEvent{Resource: fwk.Pod, ActionType: podActionType}, QueueingHintFn: f.isSchedulableAfterPodEvent},
 		{Event: fwk.ClusterEvent{Resource: fwk.Node, ActionType: nodeActionType}, QueueingHintFn: f.isSchedulableAfterNodeChange},
