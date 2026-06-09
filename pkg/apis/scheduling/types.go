@@ -259,10 +259,6 @@ type PodGroupTemplate struct {
 	Priority *int32
 }
 
-// CompositePodGroupTemplateList is a list of CompositePodGroupTemplates.
-// +k8s:eachVal=+k8s:opaqueType
-type CompositePodGroupTemplateList []CompositePodGroupTemplate
-
 // PodGroupSchedulingPolicy defines the scheduling configuration for a PodGroup.
 // Exactly one policy must be set.
 // +union
@@ -639,7 +635,7 @@ type CompositePodGroupTemplate struct {
 	// +optional
 	// +listType=map
 	// +listMapKey=name
-	CompositePodGroupTemplates CompositePodGroupTemplateList
+	CompositePodGroupTemplates []CompositePodGroupTemplate
 
 	// PodGroupTemplates is the list of templates for children PodGroups.
 	// The maximum number of templates is 8. This field is immutable.

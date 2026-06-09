@@ -263,7 +263,7 @@ type CompositePodGroupTemplate struct {
 	// +k8s:listType=map
 	// +k8s:listMapKey=name
 	// +k8s:maxItems=8
-	CompositePodGroupTemplates CompositePodGroupTemplateList `json:"compositePodGroupTemplates,omitempty" protobuf:"bytes,7,rep,name=compositePodGroupTemplates"`
+	CompositePodGroupTemplates []CompositePodGroupTemplate `json:"compositePodGroupTemplates,omitempty" protobuf:"bytes,7,rep,name=compositePodGroupTemplates"`
 
 	// PodGroupTemplates is the list of templates for children PodGroups.
 	// The maximum number of templates is 8.
@@ -277,10 +277,6 @@ type CompositePodGroupTemplate struct {
 	// +k8s:maxItems=8
 	PodGroupTemplates []PodGroupTemplate `json:"podGroupTemplates,omitempty" protobuf:"bytes,8,rep,name=podGroupTemplates"`
 }
-
-// CompositePodGroupTemplateList is a list of CompositePodGroupTemplates.
-// +k8s:eachVal=+k8s:opaqueType
-type CompositePodGroupTemplateList []CompositePodGroupTemplate
 
 // PodGroupSchedulingPolicy defines the scheduling configuration for a PodGroup.
 // Exactly one policy must be set.
