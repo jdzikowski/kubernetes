@@ -58,14 +58,18 @@ func testDeclarativeValidate(t *testing.T, apiVersion string) {
 		input                           scheduling.Workload
 		enableTopologyAwareScheduling   bool
 		enableDRAWorkloadResourceClaims bool
+		enableCompositePodGroup         bool
 		expectedErrs                    field.ErrorList
 	}{
 		"valid": {
 			input: mkValidWorkload(),
 		},
 		"empty podGroupTemplates": {
-			input:        mkValidWorkload(clearPodGroupTemplates()),
-			expectedErrs: field.ErrorList{field.Required(field.NewPath("spec", "podGroupTemplates"), "must have at least one item")},
+			input: mkValidWorkload(clearPodGroupTemplates()),
+			expectedErrs: field.ErrorList{
+				field.Required(field.NewPath("spec"), "exactly one of compositePodGroupTemplates and podGroupTemplates must be set").MarkFromImperative(),
+				field.Invalid(field.NewPath("spec"), "", "must specify one of: `podGroupTemplates`, `compositePodGroupTemplates`").WithOrigin("union"),
+			},
 		},
 		"too many podGroupTemplates": {
 			input:        mkValidWorkload(setManyPodGroupTemplates(scheduling.WorkloadMaxPodGroupTemplates + 1)),
@@ -315,6 +319,277 @@ func testDeclarativeValidate(t *testing.T, apiVersion string) {
 			input:        mkValidWorkload(setSchedulingConstraints(0)),
 			expectedErrs: field.ErrorList{field.Forbidden(field.NewPath("spec", "podGroupTemplates").Index(0).Child("schedulingConstraints"), "")},
 		},
+		"empty compositePodGroupTemplates": {
+			input: mkValidWorkload(setEmptyCompositePodGroupTemplates()),
+			expectedErrs: field.ErrorList{
+				field.Required(field.NewPath("spec"), "exactly one of compositePodGroupTemplates and podGroupTemplates must be set").MarkFromImperative(),
+				field.Invalid(field.NewPath("spec"), "", "must specify one of: `podGroupTemplates`, `compositePodGroupTemplates`").WithOrigin("union"),
+			},
+			enableCompositePodGroup: true,
+		},
+		"both podGroupTemplates and compositePodGroupTemplates": {
+			input: mkValidWorkload(setBothTemplates()),
+			expectedErrs: field.ErrorList{
+				field.Forbidden(field.NewPath("spec", "compositePodGroupTemplates"), "exactly one of compositePodGroupTemplates and podGroupTemplates must be set").MarkFromImperative(),
+				field.Invalid(field.NewPath("spec"), "{podGroupTemplates, compositePodGroupTemplates}", "must specify exactly one of: `podGroupTemplates`, `compositePodGroupTemplates`").WithOrigin("union"),
+			},
+			enableCompositePodGroup: true,
+		},
+		"forbidden compositePodGroupTemplates": {
+			input:        mkValidWorkload(addCompositePodGroupTemplate("cpg-1")),
+			expectedErrs: field.ErrorList{field.Forbidden(field.NewPath("spec", "compositePodGroupTemplates"), "")},
+		},
+		"too many compositePodGroupTemplates": {
+			input:                   mkValidWorkload(setManyCompositePodGroupTemplates(scheduling.WorkloadMaxPodGroupTemplates + 1)),
+			expectedErrs:            field.ErrorList{field.TooMany(field.NewPath("spec", "compositePodGroupTemplates"), scheduling.WorkloadMaxPodGroupTemplates+1, scheduling.WorkloadMaxPodGroupTemplates).WithOrigin("maxItems")},
+			enableCompositePodGroup: true,
+		},
+		"duplicate compositePodGroupTemplates": {
+			input:                   mkValidWorkload(addCompositePodGroupTemplate("main")),
+			expectedErrs:            field.ErrorList{field.Duplicate(field.NewPath("spec", "compositePodGroupTemplates").Index(1), nil)},
+			enableCompositePodGroup: true,
+		},
+		"invalid compositePodGroupTemplate name": {
+			input:                   mkValidWorkload(setCompositePodGroupName(0, "Invalid_Name")),
+			expectedErrs:            field.ErrorList{field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("name"), nil, "").WithOrigin("format=k8s-short-name")},
+			enableCompositePodGroup: true,
+		},
+		"empty compositePodGroupTemplate name": {
+			input:                   mkValidWorkload(setCompositePodGroupName(0, "")),
+			expectedErrs:            field.ErrorList{field.Required(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("name"), "")},
+			enableCompositePodGroup: true,
+		},
+		"too many nested compositePodGroupTemplates": {
+			input:                   mkValidWorkload(setNestedManyCompositePodGroupTemplates(0, scheduling.WorkloadMaxPodGroupTemplates+1)),
+			expectedErrs:            field.ErrorList{field.TooMany(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("compositePodGroupTemplates"), scheduling.WorkloadMaxPodGroupTemplates+1, scheduling.WorkloadMaxPodGroupTemplates).WithOrigin("maxItems")},
+			enableCompositePodGroup: true,
+		},
+		"duplicate nested compositePodGroupTemplates": {
+			input:                   mkValidWorkload(addNestedCompositePodGroupTemplate(0, "sub", "sub")),
+			expectedErrs:            field.ErrorList{field.Duplicate(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("compositePodGroupTemplates").Index(1), nil)},
+			enableCompositePodGroup: true,
+		},
+		"cpg empty priorityClassName": {
+			input:                   mkValidWorkload(setCPGPriorityClassName(0, "my-priority")),
+			expectedErrs:            field.ErrorList{field.Forbidden(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("priorityClassName"), "")},
+			enableCompositePodGroup: true,
+		},
+		"cpg invalid priorityClassName": {
+			input: mkValidWorkload(setCPGPriorityClassName(0, "Invalid_Class"), setNestedPGPriorityClassName(0, 0, "Invalid_Class")),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("priorityClassName"), nil, "").WithOrigin("format=k8s-long-name"),
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("priorityClassName"), nil, "").WithOrigin("format=k8s-long-name"),
+			},
+			enableCompositePodGroup: true,
+		},
+		"cpg forbidden priority": {
+			input:                   mkValidWorkload(setCPGPriority(0, 100)),
+			expectedErrs:            field.ErrorList{field.Forbidden(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("priority"), "")},
+			enableCompositePodGroup: true,
+		},
+		"cpg policy missing gang": {
+			input:                   mkValidWorkload(setCPGPolicyEmpty(0)),
+			expectedErrs:            field.ErrorList{field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("schedulingPolicy"), nil, "").WithOrigin("union")},
+			enableCompositePodGroup: true,
+		},
+		"cpg policy missing gang minGroupCount": {
+			input:                   mkValidWorkload(setCPGMinGroupCount(0, 0)),
+			expectedErrs:            field.ErrorList{field.Required(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("schedulingPolicy", "gang", "minGroupCount"), "")},
+			enableCompositePodGroup: true,
+		},
+		"cpg policy invalid gang minGroupCount": {
+			input:                   mkValidWorkload(setCPGMinGroupCount(0, -1)),
+			expectedErrs:            field.ErrorList{field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("schedulingPolicy", "gang", "minGroupCount"), nil, "").WithOrigin("minimum")},
+			enableCompositePodGroup: true,
+		},
+		"too many nested podGroupTemplates": {
+			input:                   mkValidWorkload(setNestedManyPodGroupTemplates(0, scheduling.WorkloadMaxPodGroupTemplates+1)),
+			expectedErrs:            field.ErrorList{field.TooMany(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates"), scheduling.WorkloadMaxPodGroupTemplates+1, scheduling.WorkloadMaxPodGroupTemplates).WithOrigin("maxItems")},
+			enableCompositePodGroup: true,
+		},
+		"duplicate nested podGroupTemplates": {
+			input:                   mkValidWorkload(addNestedPodGroupTemplate(0, "sub-pg", "sub-pg")),
+			expectedErrs:            field.ErrorList{field.Duplicate(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(2), nil)},
+			enableCompositePodGroup: true,
+		},
+		"nested pg empty name": {
+			input:                   mkValidWorkload(setNestedPGName(0, 0, "")),
+			expectedErrs:            field.ErrorList{field.Required(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("name"), "")},
+			enableCompositePodGroup: true,
+		},
+		"nested pg invalid name": {
+			input:                   mkValidWorkload(setNestedPGName(0, 0, "Invalid_Name")),
+			expectedErrs:            field.ErrorList{field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("name"), nil, "").WithOrigin("format=k8s-short-name")},
+			enableCompositePodGroup: true,
+		},
+		"nested pg forbidden disruptionMode": {
+			input:                   mkValidWorkload(setNestedPGDisruptionModeSingle(0, 0)),
+			expectedErrs:            field.ErrorList{field.Forbidden(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("disruptionMode"), "")},
+			enableCompositePodGroup: true,
+		},
+		"nested pg invalid disruptionMode union": {
+			input:                   mkValidWorkload(setNestedPGDisruptionModeBoth(0, 0)),
+			expectedErrs:            field.ErrorList{field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("disruptionMode"), nil, "").WithOrigin("union")},
+			enableCompositePodGroup: true,
+		},
+		"nested pg forbidden priorityClassName": {
+			input:                   mkValidWorkload(setNestedPGPriorityClassName(0, 0, "my-priority")),
+			expectedErrs:            field.ErrorList{field.Forbidden(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("priorityClassName"), "")},
+			enableCompositePodGroup: true,
+		},
+		"nested pg invalid priorityClassName": {
+			input: mkValidWorkload(setCPGPriorityClassName(0, "Invalid_Class"), setNestedPGPriorityClassName(0, 0, "Invalid_Class")),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("priorityClassName"), nil, "").WithOrigin("format=k8s-long-name"),
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("priorityClassName"), nil, "").WithOrigin("format=k8s-long-name"),
+			},
+			enableCompositePodGroup: true,
+		},
+		"nested pg forbidden priority": {
+			input:                   mkValidWorkload(setNestedPGPriority(0, 0, 100)),
+			expectedErrs:            field.ErrorList{field.Forbidden(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("priority"), "")},
+			enableCompositePodGroup: true,
+		},
+		"nested pg invalid priority max": {
+			input: mkValidWorkload(setCPGPriority(0, 1000000001), setNestedPGPriority(0, 0, 1000000001)),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("priority"), nil, "").WithOrigin("maximum"),
+			},
+			enableCompositePodGroup: true,
+		},
+		"nested pg too many resourceClaims": {
+			input:                           mkValidWorkload(setNestedPGManyResourceClaims(0, 0, scheduling.MaxPodGroupResourceClaims+1)),
+			expectedErrs:                    field.ErrorList{field.TooMany(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("resourceClaims"), scheduling.MaxPodGroupResourceClaims+1, scheduling.MaxPodGroupResourceClaims).WithOrigin("maxItems")},
+			enableCompositePodGroup:         true,
+			enableDRAWorkloadResourceClaims: true,
+		},
+		"nested pg duplicate resourceClaims": {
+			input:                           mkValidWorkload(addNestedPGResourceClaim(0, 0, "claim1", "claim1")),
+			expectedErrs:                    field.ErrorList{field.Duplicate(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("resourceClaims").Index(1), nil)},
+			enableCompositePodGroup:         true,
+			enableDRAWorkloadResourceClaims: true,
+		},
+		"nested pg resourceClaim invalid union": {
+			input:                           mkValidWorkload(setNestedPGResourceClaimBoth(0, 0, "claim1")),
+			expectedErrs:                    field.ErrorList{field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("resourceClaims").Index(0), nil, "").WithOrigin("union")},
+			enableCompositePodGroup:         true,
+			enableDRAWorkloadResourceClaims: true,
+		},
+		"nested pg resourceClaim missing name": {
+			input:                           mkValidWorkload(addNestedPGResourceClaimEmptyName(0, 0)),
+			expectedErrs:                    field.ErrorList{field.Required(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("resourceClaims").Index(0).Child("name"), "")},
+			enableCompositePodGroup:         true,
+			enableDRAWorkloadResourceClaims: true,
+		},
+		"nested pg resourceClaim invalid name": {
+			input:                           mkValidWorkload(addNestedPGResourceClaimInvalidName(0, 0, "Invalid_Name")),
+			expectedErrs:                    field.ErrorList{field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("resourceClaims").Index(0).Child("name"), nil, "").WithOrigin("format=k8s-short-name")},
+			enableCompositePodGroup:         true,
+			enableDRAWorkloadResourceClaims: true,
+		},
+		"nested pg resourceClaim invalid resourceClaimName": {
+			input:                           mkValidWorkload(addNestedPGResourceClaimInvalidRef(0, 0, "Invalid_Ref")),
+			expectedErrs:                    field.ErrorList{field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("resourceClaims").Index(0).Child("resourceClaimName"), nil, "").WithOrigin("format=k8s-long-name")},
+			enableCompositePodGroup:         true,
+			enableDRAWorkloadResourceClaims: true,
+		},
+		"nested pg resourceClaim invalid resourceClaimTemplateName": {
+			input:                           mkValidWorkload(addNestedPGResourceClaimInvalidTplRef(0, 0, "Invalid_Tpl")),
+			expectedErrs:                    field.ErrorList{field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("resourceClaims").Index(0).Child("resourceClaimTemplateName"), nil, "").WithOrigin("format=k8s-long-name")},
+			enableCompositePodGroup:         true,
+			enableDRAWorkloadResourceClaims: true,
+		},
+		"nested pg forbidden schedulingConstraints": {
+			input:                   mkValidWorkload(setNestedPGSchedulingConstraints(0, 0)),
+			expectedErrs:            field.ErrorList{field.Forbidden(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("schedulingConstraints"), "")},
+			enableCompositePodGroup: true,
+		},
+		"nested pg schedulingConstraints too many topology": {
+			input:                         mkValidWorkload(setNestedPGSchedulingConstraintsMany(0, 0, 2)),
+			expectedErrs:                  field.ErrorList{field.TooMany(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("schedulingConstraints", "topology"), 2, 1).WithOrigin("maxItems")},
+			enableCompositePodGroup:       true,
+			enableTopologyAwareScheduling: true,
+		},
+		"nested pg schedulingConstraints topology missing key": {
+			input:                         mkValidWorkload(setNestedPGSchedulingConstraintsEmptyKey(0, 0)),
+			expectedErrs:                  field.ErrorList{field.Required(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("schedulingConstraints", "topology").Index(0).Child("key"), "")},
+			enableCompositePodGroup:       true,
+			enableTopologyAwareScheduling: true,
+		},
+		"nested pg schedulingConstraints topology invalid key": {
+			input:                         mkValidWorkload(setNestedPGSchedulingConstraintsInvalidKey(0, 0, "invalid/key/slash/format")),
+			expectedErrs:                  field.ErrorList{field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("schedulingConstraints", "topology").Index(0).Child("key"), nil, "").WithOrigin("format=k8s-label-key")},
+			enableCompositePodGroup:       true,
+			enableTopologyAwareScheduling: true,
+		},
+		"nested pg policy invalid union": {
+			input:                   mkValidWorkload(setNestedPGPolicyBoth(0, 0)),
+			expectedErrs:            field.ErrorList{field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("schedulingPolicy"), nil, "").WithOrigin("union")},
+			enableCompositePodGroup: true,
+		},
+		"nested pg policy missing gang minCount": {
+			input:                   mkValidWorkload(setNestedPGMinCount(0, 0, 0)),
+			expectedErrs:            field.ErrorList{field.Required(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("schedulingPolicy", "gang", "minCount"), "")},
+			enableCompositePodGroup: true,
+		},
+		"nested pg policy invalid gang minCount": {
+			input:                   mkValidWorkload(setNestedPGMinCount(0, 0, -1)),
+			expectedErrs:            field.ErrorList{field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("schedulingPolicy", "gang", "minCount"), nil, "").WithOrigin("minimum")},
+			enableCompositePodGroup: true,
+		},
+		"cpg tree depth exceeds limit": {
+			input: mkValidWorkload(setCompositePodGroupTreeDepth(4)),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("compositePodGroupTemplates").Index(0).Child("compositePodGroupTemplates").Index(0).Child("compositePodGroupTemplates"), nil, "maximum tree depth is 4").MarkFromImperative(),
+			},
+			enableCompositePodGroup: true,
+		},
+		"mismatched PriorityClassName in root podGroupTemplates": {
+			input: mkValidWorkload(
+				setPriorityClassName(0, "high-priority"),
+				addPodGroupTemplate("second-pg"),
+				setPriorityClassName(1, "low-priority"),
+			),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec"), nil, "detected multiple priority configurations").MarkFromImperative(),
+			},
+		},
+		"mismatched Priority in root podGroupTemplates": {
+			input: mkValidWorkload(
+				setPriority(0, 100),
+				addPodGroupTemplate("second-pg"),
+				setPriority(1, 200),
+			),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec"), nil, "detected multiple priority configurations").MarkFromImperative(),
+			},
+		},
+		"mismatched PriorityClassName in cpg hierarchy": {
+			input: mkValidWorkload(
+				clearPodGroupTemplates(),
+				addCompositePodGroupTemplate("cpg-root"),
+				setCPGPriorityClassName(0, "high-priority"),
+				addNestedPodGroupTemplate(0, "child-pg-1", "child-pg-2"),
+				setNestedPGPriorityClassName(0, 0, "low-priority"),
+			),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec"), nil, "detected multiple priority configurations").MarkFromImperative(),
+			},
+			enableCompositePodGroup: true,
+		},
+		"mismatched Priority in cpg hierarchy": {
+			input: mkValidWorkload(
+				clearPodGroupTemplates(),
+				addCompositePodGroupTemplate("cpg-root"),
+				setCPGPriority(0, 100),
+				addNestedPodGroupTemplate(0, "child-pg-1", "child-pg-2"),
+				setNestedPGPriority(0, 0, 200),
+			),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec"), nil, "detected multiple priority configurations").MarkFromImperative(),
+			},
+			enableCompositePodGroup: true,
+		},
 	}
 	for k, tc := range testCases {
 		t.Run(k, func(t *testing.T) {
@@ -322,6 +597,7 @@ func testDeclarativeValidate(t *testing.T, apiVersion string) {
 				features.GenericWorkload:                 true,
 				features.TopologyAwareWorkloadScheduling: tc.enableTopologyAwareScheduling,
 				features.DRAWorkloadResourceClaims:       tc.enableDRAWorkloadResourceClaims,
+				features.CompositePodGroup:               tc.enableCompositePodGroup,
 			})
 			apitesting.VerifyValidationEquivalence(t, ctx, &tc.input, registry.Strategy, tc.expectedErrs)
 		})
@@ -343,6 +619,7 @@ func testDeclarativeValidateUpdate(t *testing.T, apiVersion string) {
 		updateObj                       scheduling.Workload
 		enableTopologyAwareScheduling   bool
 		enableDRAWorkloadResourceClaims bool
+		enableCompositePodGroup         bool
 		expectedErrs                    field.ErrorList
 	}{
 		"valid update": {
@@ -378,6 +655,8 @@ func testDeclarativeValidateUpdate(t *testing.T, apiVersion string) {
 			expectedErrs: field.ErrorList{
 				field.Required(field.NewPath("spec", "podGroupTemplates"), "must have at least one item"),
 				field.Forbidden(field.NewPath("spec", "podGroupTemplates"), "").WithOrigin("update"),
+				field.Required(field.NewPath("spec"), "exactly one of compositePodGroupTemplates and podGroupTemplates must be set").MarkFromImperative(),
+				field.Invalid(field.NewPath("spec"), "", "must specify one of: `podGroupTemplates`, `compositePodGroupTemplates`").WithOrigin("union"),
 			},
 		},
 		"change podGroupTemplate name": {
@@ -587,6 +866,54 @@ func testDeclarativeValidateUpdate(t *testing.T, apiVersion string) {
 				field.Invalid(field.NewPath("spec", "podGroupTemplates").Index(0).Child("priority"), nil, "").WithOrigin("immutable"),
 			},
 		},
+		"invalid update immutable compositePodGroupTemplates": {
+			oldObj:    mkValidWorkload(setResourceVersion("1"), addCompositePodGroupTemplate()),
+			updateObj: mkValidWorkload(setResourceVersion("1"), addCompositePodGroupTemplate("another")),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates"), nil, "").WithOrigin("immutable"),
+			},
+			enableCompositePodGroup: true,
+		},
+		"invalid update immutable nested compositePodGroupTemplates": {
+			oldObj:    mkValidWorkload(setResourceVersion("1"), addCompositePodGroupTemplate()),
+			updateObj: mkValidWorkload(setResourceVersion("1"), addNestedCompositePodGroupTemplate(0, "sub")),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates"), nil, "").WithOrigin("immutable"),
+			},
+			enableCompositePodGroup: true,
+		},
+		"invalid update immutable cpg priorityClassName": {
+			oldObj:    mkValidWorkload(setResourceVersion("1"), setCPGPriorityClassName(0, "p1"), setNestedPGPriorityClassName(0, 0, "p1")),
+			updateObj: mkValidWorkload(setResourceVersion("1"), setCPGPriorityClassName(0, "p2"), setNestedPGPriorityClassName(0, 0, "p2")),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates"), nil, "").WithOrigin("immutable"),
+			},
+			enableCompositePodGroup: true,
+		},
+		"invalid update immutable cpg priority": {
+			oldObj:    mkValidWorkload(setResourceVersion("1"), setCPGPriority(0, 1), setNestedPGPriority(0, 0, 1)),
+			updateObj: mkValidWorkload(setResourceVersion("1"), setCPGPriority(0, 2), setNestedPGPriority(0, 0, 2)),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates"), nil, "").WithOrigin("immutable"),
+			},
+			enableCompositePodGroup: true,
+		},
+		"invalid update immutable cpg schedulingPolicy": {
+			oldObj:    mkValidWorkload(setResourceVersion("1"), addCompositePodGroupTemplate()),
+			updateObj: mkValidWorkload(setResourceVersion("1"), setCPGMinGroupCount(0, 5)),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates"), nil, "").WithOrigin("immutable"),
+			},
+			enableCompositePodGroup: true,
+		},
+		"invalid update immutable nested podGroupTemplates": {
+			oldObj:    mkValidWorkload(setResourceVersion("1"), addCompositePodGroupTemplate()),
+			updateObj: mkValidWorkload(setResourceVersion("1"), addNestedPodGroupTemplate(0, "another-pg")),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates"), nil, "").WithOrigin("immutable"),
+			},
+			enableCompositePodGroup: true,
+		},
 	}
 	for k, tc := range testCases {
 		t.Run(k, func(t *testing.T) {
@@ -594,6 +921,7 @@ func testDeclarativeValidateUpdate(t *testing.T, apiVersion string) {
 				features.GenericWorkload:                 true,
 				features.TopologyAwareWorkloadScheduling: tc.enableTopologyAwareScheduling,
 				features.DRAWorkloadResourceClaims:       tc.enableDRAWorkloadResourceClaims,
+				features.CompositePodGroup:               tc.enableCompositePodGroup,
 			})
 			ctx := genericapirequest.WithRequestInfo(genericapirequest.NewDefaultContext(), &genericapirequest.RequestInfo{
 				APIPrefix:         "apis",
@@ -788,5 +1116,379 @@ func setPriorityClassName(pgIdx int, priorityClassName string) func(obj *schedul
 func setPriority(pgIdx int, priority int32) func(obj *scheduling.Workload) {
 	return func(obj *scheduling.Workload) {
 		obj.Spec.PodGroupTemplates[pgIdx].Priority = new(priority)
+	}
+}
+
+func setEmptyCompositePodGroupTemplates() func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		obj.Spec.PodGroupTemplates = nil
+		obj.Spec.CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{}
+	}
+}
+
+func addCompositePodGroupTemplate(names ...string) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		obj.Spec.PodGroupTemplates = nil
+		if obj.Spec.CompositePodGroupTemplates == nil {
+			obj.Spec.CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+				Name: "main",
+				SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+					Gang: &scheduling.GangGroupSchedulingPolicy{
+						MinGroupCount: 1,
+					},
+				},
+				PodGroupTemplates: []scheduling.PodGroupTemplate{{
+					Name: "worker-main",
+					SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+						Gang: &scheduling.GangSchedulingPolicy{MinCount: 1},
+					},
+				}},
+			}}
+		}
+		for _, name := range names {
+			obj.Spec.CompositePodGroupTemplates = append(obj.Spec.CompositePodGroupTemplates, scheduling.CompositePodGroupTemplate{
+				Name: name,
+				SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+					Gang: &scheduling.GangGroupSchedulingPolicy{MinGroupCount: 1},
+				},
+				PodGroupTemplates: []scheduling.PodGroupTemplate{{
+					Name: fmt.Sprintf("worker-%s-%d", name, len(obj.Spec.CompositePodGroupTemplates)),
+					SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+						Gang: &scheduling.GangSchedulingPolicy{MinCount: 1},
+					},
+				}},
+			})
+		}
+	}
+}
+
+func setManyCompositePodGroupTemplates(n int) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		obj.Spec.PodGroupTemplates = nil
+		obj.Spec.CompositePodGroupTemplates = make([]scheduling.CompositePodGroupTemplate, n)
+		for i := range obj.Spec.CompositePodGroupTemplates {
+			obj.Spec.CompositePodGroupTemplates[i] = scheduling.CompositePodGroupTemplate{
+				Name: fmt.Sprintf("cpg-%d", i),
+				SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+					Gang: &scheduling.GangGroupSchedulingPolicy{MinGroupCount: 1},
+				},
+				PodGroupTemplates: []scheduling.PodGroupTemplate{{
+					Name: fmt.Sprintf("worker-%d", i),
+					SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+						Gang: &scheduling.GangSchedulingPolicy{MinCount: 1},
+					},
+				}},
+			}
+		}
+	}
+}
+
+func setCompositePodGroupName(idx int, name string) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[idx].Name = name
+	}
+}
+
+func setNestedManyCompositePodGroupTemplates(idx, n int) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[idx].CompositePodGroupTemplates = make([]scheduling.CompositePodGroupTemplate, n)
+		for i := range obj.Spec.CompositePodGroupTemplates[idx].CompositePodGroupTemplates {
+			obj.Spec.CompositePodGroupTemplates[idx].CompositePodGroupTemplates[i] = scheduling.CompositePodGroupTemplate{
+				Name: fmt.Sprintf("sub-%d", i),
+				SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+					Gang: &scheduling.GangGroupSchedulingPolicy{MinGroupCount: 1},
+				},
+			}
+		}
+	}
+}
+
+func addNestedCompositePodGroupTemplate(idx int, names ...string) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		for _, name := range names {
+			obj.Spec.CompositePodGroupTemplates[idx].CompositePodGroupTemplates = append(
+				obj.Spec.CompositePodGroupTemplates[idx].CompositePodGroupTemplates,
+				scheduling.CompositePodGroupTemplate{
+					Name: name,
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Gang: &scheduling.GangGroupSchedulingPolicy{MinGroupCount: 1},
+					},
+				},
+			)
+		}
+	}
+}
+
+func setCPGPriorityClassName(idx int, priorityClassName string) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[idx].PriorityClassName = priorityClassName
+	}
+}
+
+func setCPGPriority(idx int, priority int32) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[idx].Priority = &priority
+	}
+}
+
+func setCPGPolicyEmpty(idx int) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[idx].SchedulingPolicy = scheduling.CompositePodGroupSchedulingPolicy{}
+	}
+}
+
+func setCPGMinGroupCount(idx int, min int) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[idx].SchedulingPolicy.Gang.MinGroupCount = int32(min)
+	}
+}
+
+func setNestedManyPodGroupTemplates(idx, n int) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[idx].PodGroupTemplates = make([]scheduling.PodGroupTemplate, n)
+		for i := range obj.Spec.CompositePodGroupTemplates[idx].PodGroupTemplates {
+			obj.Spec.CompositePodGroupTemplates[idx].PodGroupTemplates[i] = scheduling.PodGroupTemplate{
+				Name: fmt.Sprintf("pg-%d", i),
+				SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+					Gang: &scheduling.GangSchedulingPolicy{MinCount: 1},
+				},
+			}
+		}
+	}
+}
+
+func addNestedPodGroupTemplate(idx int, names ...string) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		for _, name := range names {
+			obj.Spec.CompositePodGroupTemplates[idx].PodGroupTemplates = append(
+				obj.Spec.CompositePodGroupTemplates[idx].PodGroupTemplates,
+				scheduling.PodGroupTemplate{
+					Name: name,
+					SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+						Gang: &scheduling.GangSchedulingPolicy{MinCount: 1},
+					},
+				},
+			)
+		}
+	}
+}
+
+func setNestedPGName(cidx, pidx int, name string) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].Name = name
+	}
+}
+
+func setNestedPGDisruptionModeSingle(cidx, pidx int) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].DisruptionMode = &scheduling.DisruptionMode{Single: &scheduling.SingleDisruptionMode{}}
+	}
+}
+
+func setNestedPGDisruptionModeBoth(cidx, pidx int) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].DisruptionMode = &scheduling.DisruptionMode{Single: &scheduling.SingleDisruptionMode{}, All: &scheduling.AllDisruptionMode{}}
+	}
+}
+
+func setNestedPGPriorityClassName(cidx, pidx int, name string) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].PriorityClassName = name
+	}
+}
+
+func setNestedPGPriority(cidx, pidx int, p int32) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].Priority = &p
+	}
+}
+
+func setNestedPGManyResourceClaims(cidx, pidx, n int) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].ResourceClaims = make([]scheduling.PodGroupResourceClaim, n)
+		for i := range obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].ResourceClaims {
+			obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].ResourceClaims[i] = scheduling.PodGroupResourceClaim{
+				Name:              fmt.Sprintf("claim-%d", i),
+				ResourceClaimName: new("valid-ref"),
+			}
+		}
+	}
+}
+
+func addNestedPGResourceClaim(cidx, pidx int, names ...string) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		for _, name := range names {
+			obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].ResourceClaims = append(
+				obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].ResourceClaims,
+				scheduling.PodGroupResourceClaim{Name: name, ResourceClaimName: new("valid-ref")},
+			)
+		}
+	}
+}
+
+func setNestedPGResourceClaimBoth(cidx, pidx int, name string) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].ResourceClaims = []scheduling.PodGroupResourceClaim{
+			{Name: name, ResourceClaimName: new("valid-ref"), ResourceClaimTemplateName: new("valid-ref")},
+		}
+	}
+}
+
+func addNestedPGResourceClaimEmptyName(cidx, pidx int) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].ResourceClaims = []scheduling.PodGroupResourceClaim{
+			{ResourceClaimName: new("valid-ref")},
+		}
+	}
+}
+
+func addNestedPGResourceClaimInvalidName(cidx, pidx int, name string) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].ResourceClaims = []scheduling.PodGroupResourceClaim{
+			{Name: name, ResourceClaimName: new("valid-ref")},
+		}
+	}
+}
+
+func addNestedPGResourceClaimInvalidRef(cidx, pidx int, ref string) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].ResourceClaims = []scheduling.PodGroupResourceClaim{
+			{Name: "valid-name", ResourceClaimName: &ref},
+		}
+	}
+}
+
+func addNestedPGResourceClaimInvalidTplRef(cidx, pidx int, ref string) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].ResourceClaims = []scheduling.PodGroupResourceClaim{
+			{Name: "valid-name", ResourceClaimTemplateName: &ref},
+		}
+	}
+}
+
+func setNestedPGSchedulingConstraints(cidx, pidx int) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].SchedulingConstraints = &scheduling.PodGroupSchedulingConstraints{}
+	}
+}
+
+func setNestedPGSchedulingConstraintsMany(cidx, pidx, n int) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].SchedulingConstraints = &scheduling.PodGroupSchedulingConstraints{
+			Topology: make([]scheduling.TopologyConstraint, n),
+		}
+		for i := range obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].SchedulingConstraints.Topology {
+			obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].SchedulingConstraints.Topology[i] = scheduling.TopologyConstraint{Key: fmt.Sprintf("key-%d", i)}
+		}
+	}
+}
+
+func setNestedPGSchedulingConstraintsEmptyKey(cidx, pidx int) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].SchedulingConstraints = &scheduling.PodGroupSchedulingConstraints{
+			Topology: []scheduling.TopologyConstraint{{}},
+		}
+	}
+}
+
+func setNestedPGSchedulingConstraintsInvalidKey(cidx, pidx int, key string) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].SchedulingConstraints = &scheduling.PodGroupSchedulingConstraints{
+			Topology: []scheduling.TopologyConstraint{{Key: key}},
+		}
+	}
+}
+
+func setNestedPGPolicyBoth(cidx, pidx int) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].SchedulingPolicy = scheduling.PodGroupSchedulingPolicy{
+			Basic: &scheduling.BasicSchedulingPolicy{},
+			Gang:  &scheduling.GangSchedulingPolicy{MinCount: 1},
+		}
+	}
+}
+
+func setNestedPGMinCount(cidx, pidx int, count int) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		addCompositePodGroupTemplate()(obj)
+		obj.Spec.CompositePodGroupTemplates[cidx].PodGroupTemplates[pidx].SchedulingPolicy.Gang.MinCount = int32(count)
+	}
+}
+func setBothTemplates() func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		obj.Spec.PodGroupTemplates = []scheduling.PodGroupTemplate{{
+			Name: "main",
+			SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+				Basic: &scheduling.BasicSchedulingPolicy{},
+			},
+		}}
+		obj.Spec.CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+			Name: "cpg",
+			SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+				Basic: &scheduling.BasicGroupSchedulingPolicy{},
+			},
+			PodGroupTemplates: []scheduling.PodGroupTemplate{{
+				Name: "cpg-pg",
+				SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+					Basic: &scheduling.BasicSchedulingPolicy{},
+				},
+			}},
+		}}
+	}
+}
+
+func setCompositePodGroupTreeDepth(depth int) func(obj *scheduling.Workload) {
+	return func(obj *scheduling.Workload) {
+		obj.Spec.PodGroupTemplates = nil
+		var buildTree func(level int) []scheduling.CompositePodGroupTemplate
+		buildTree = func(level int) []scheduling.CompositePodGroupTemplate {
+			if level > depth {
+				return nil
+			}
+			cpgTpl := scheduling.CompositePodGroupTemplate{
+				Name: fmt.Sprintf("cpg-%d", level),
+				SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+					Basic: &scheduling.BasicGroupSchedulingPolicy{},
+				},
+			}
+			if level < depth {
+				cpgTpl.CompositePodGroupTemplates = buildTree(level + 1)
+			} else {
+				cpgTpl.PodGroupTemplates = []scheduling.PodGroupTemplate{{
+					Name: "pg-leaf",
+					SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+						Basic: &scheduling.BasicSchedulingPolicy{},
+					},
+				}}
+			}
+			return []scheduling.CompositePodGroupTemplate{cpgTpl}
+		}
+		obj.Spec.CompositePodGroupTemplates = buildTree(1)
 	}
 }
