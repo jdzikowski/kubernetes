@@ -33,6 +33,10 @@ import (
 // name for a Workload is valid.
 var validateWorkloadName = apimachineryvalidation.NameIsDNSSubdomain
 
+// validateCompositePodGroupName can be used to check whether the given
+// name for a CompositePodGroup is valid.
+var validateCompositePodGroupName = apimachineryvalidation.NameIsDNSSubdomain
+
 // ValidatePriorityClass tests whether required fields in the PriorityClass are
 // set correctly.
 func ValidatePriorityClass(pc *scheduling.PriorityClass) field.ErrorList {
@@ -116,4 +120,22 @@ func havePodGroupClaim(podGroupClaims []scheduling.PodGroupResourceClaim, name s
 	return slices.ContainsFunc(podGroupClaims, func(podGroupClaim scheduling.PodGroupResourceClaim) bool {
 		return podGroupClaim.Name == name
 	})
+}
+
+// ValidateCompositePodGroup tests if all fields in a CompositePodGroup are set correctly.
+func ValidateCompositePodGroup(compositePodGroup *scheduling.CompositePodGroup) field.ErrorList {
+	return apivalidation.ValidateObjectMeta(&compositePodGroup.ObjectMeta, true, validateCompositePodGroupName, field.NewPath("metadata"))
+}
+
+// ValidateCompositePodGroupUpdate tests if an update to CompositePodGroup is valid.
+func ValidateCompositePodGroupUpdate(compositePodGroup, oldCompositePodGroup *scheduling.CompositePodGroup) field.ErrorList {
+	return apivalidation.ValidateObjectMetaUpdate(&compositePodGroup.ObjectMeta, &oldCompositePodGroup.ObjectMeta, field.NewPath("metadata"))
+}
+
+// ValidateCompositePodGroupStatusUpdate tests if an update to the status of a CompositePodGroup is valid.
+func ValidateCompositePodGroupStatusUpdate(compositePodGroup, oldCompositePodGroup *scheduling.CompositePodGroup) field.ErrorList {
+	allErrs := apivalidation.ValidateObjectMetaUpdate(&compositePodGroup.ObjectMeta, &oldCompositePodGroup.ObjectMeta, field.NewPath("metadata"))
+	fldPath := field.NewPath("status")
+	allErrs = append(allErrs, metav1validation.ValidateConditions(compositePodGroup.Status.Conditions, fldPath.Child("conditions"))...)
+	return allErrs
 }
