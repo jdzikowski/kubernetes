@@ -26,6 +26,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
 	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -80,6 +81,9 @@ type cacheImpl struct {
 	podGroupStates map[fwk.EntityKey]*podGroupState
 	// compositePodGroupStates stores the runtime state for each known composite pod group (only if CompositePodGroup feature gate is enabled).
 	compositePodGroupStates map[fwk.EntityKey]*compositePodGroupState
+	// rootKeys caches the root key for each known pod group and composite pod group.
+	// An entry maps an EntityKey to its root's EntityKey, or nil if its root is unknown or disconnected.
+	rootKeys map[fwk.EntityKey]*fwk.EntityKey
 	// genericWorkloadEnabled stores the GenericWorkload feature gate value.
 	genericWorkloadEnabled bool
 	// compositePodGroupEnabled stores the CompositePodGroup feature gate value.
@@ -113,6 +117,7 @@ func newCache(ctx context.Context, period time.Duration, apiDispatcher fwk.APIDi
 		imageStates:              make(map[string]*fwk.ImageStateSummary),
 		podGroupStates:           make(map[fwk.EntityKey]*podGroupState),
 		compositePodGroupStates:  make(map[fwk.EntityKey]*compositePodGroupState),
+		rootKeys:                 make(map[fwk.EntityKey]*fwk.EntityKey),
 		genericWorkloadEnabled:   genericWorkloadEnabled,
 		compositePodGroupEnabled: compositePodGroupEnabled,
 		apiDispatcher:            apiDispatcher,
@@ -1151,23 +1156,53 @@ func (cache *cacheImpl) AddGenericPodGroup(gpg *framework.GenericPodGroup) {
 		cpgs.setCompositePodGroup(gpg.CompositePodGroup)
 	}
 
-	// Both PodGroups and CompositePodGroups can specify a parent CompositePodGroup.
-	// Even if the parent has not been observed in the cache yet, we create a placeholder entry
-	// so child-parent hierarchy tracking remains consistent.
 	if !cache.compositePodGroupEnabled {
-		return
-	}
-	parentKey, hasParent := gpg.GetParentKey()
-	if !hasParent {
+		rootKey := key
+		cache.rootKeys[key] = &rootKey
 		return
 	}
 
+	parentKey, hasParent := gpg.GetParentKey()
+	if !hasParent {
+		// gpg is a root podgroup or root composite podgroup.
+		rootKey := key
+		cache.rootKeys[key] = &rootKey
+		cache.updateRootKeyRecursively(key, &rootKey, sets.New[fwk.EntityKey]())
+		return
+	}
+
+	// gpg has a parent.
 	parent, parentExists := cache.compositePodGroupStates[parentKey]
 	if !parentExists {
 		parent = newCompositePodGroupState()
 		cache.compositePodGroupStates[parentKey] = parent
 	}
 	parent.addChild(key)
+
+	parentRoot := cache.rootKeys[parentKey]
+	cache.rootKeys[key] = parentRoot
+	cache.updateRootKeyRecursively(key, parentRoot, sets.New[fwk.EntityKey]())
+}
+
+// updateRootKeyRecursively updates the cached root key for the given entity and all its descendants.
+// It assumes that the cache lock is held by the caller.
+func (cache *cacheImpl) updateRootKeyRecursively(key fwk.EntityKey, rootKey *fwk.EntityKey, visited sets.Set[fwk.EntityKey]) {
+	if visited.Has(key) {
+		return
+	}
+	visited.Insert(key)
+
+	if _, exists := cache.rootKeys[key]; exists {
+		cache.rootKeys[key] = rootKey
+	}
+
+	if key.Type == fwk.CompositePodGroupKeyType {
+		if cpgs, exists := cache.compositePodGroupStates[key]; exists {
+			for childKey := range cpgs.children {
+				cache.updateRootKeyRecursively(childKey, rootKey, visited)
+			}
+		}
+	}
 }
 
 // UpdateGenericPodGroup updates an existing generic pod group object in the cache.
@@ -1177,6 +1212,8 @@ func (cache *cacheImpl) UpdateGenericPodGroup(logger klog.Logger, gpg *framework
 
 	key := gpg.GetKey()
 
+	var oldParentKey *fwk.EntityKey
+	var oldUID types.UID
 	switch gpg.GetType() {
 	case fwk.PodGroupKeyType:
 		pgs, exists := cache.podGroupStates[key]
@@ -1184,6 +1221,13 @@ func (cache *cacheImpl) UpdateGenericPodGroup(logger klog.Logger, gpg *framework
 			// This should not happen: the pod group state should have been already created by a prior add action.
 			utilruntime.HandleErrorWithLogger(logger, nil, "Pod group state not found for update, this indicates a missed add event", "podGroup", klog.KObj(gpg))
 			return
+		}
+		if pgs.podGroup != nil {
+			oldUID = pgs.podGroup.UID
+			if pgs.podGroup.Spec.ParentCompositePodGroupName != nil {
+				pk := fwk.CompositePodGroupKey(pgs.podGroup.Namespace, *pgs.podGroup.Spec.ParentCompositePodGroupName)
+				oldParentKey = &pk
+			}
 		}
 		pgs.setPodGroup(gpg.PodGroup)
 	case fwk.CompositePodGroupKeyType:
@@ -1193,8 +1237,66 @@ func (cache *cacheImpl) UpdateGenericPodGroup(logger klog.Logger, gpg *framework
 			utilruntime.HandleErrorWithLogger(logger, nil, "Composite pod group state not found for update, this indicates a missed add event", "compositePodGroup", klog.KObj(gpg))
 			return
 		}
+		if cpgs.compositePodGroup != nil {
+			oldUID = cpgs.compositePodGroup.UID
+			if cpgs.compositePodGroup.Spec.ParentCompositePodGroupName != nil {
+				pk := fwk.CompositePodGroupKey(cpgs.compositePodGroup.Namespace, *cpgs.compositePodGroup.Spec.ParentCompositePodGroupName)
+				oldParentKey = &pk
+			}
+		}
 		cpgs.setCompositePodGroup(gpg.CompositePodGroup)
 	}
+
+	if !cache.compositePodGroupEnabled {
+		return
+	}
+
+	newUID := gpg.GetUID()
+	if oldUID == newUID {
+		return
+	}
+
+	newParentKey, hasNewParent := gpg.GetParentKey()
+	parentChanged := false
+	if oldParentKey == nil && hasNewParent {
+		parentChanged = true
+	} else if oldParentKey != nil && !hasNewParent {
+		parentChanged = true
+	} else if oldParentKey != nil && hasNewParent && *oldParentKey != newParentKey {
+		parentChanged = true
+	}
+
+	if !parentChanged {
+		return
+	}
+
+	// Parent changed: unregister from old parent.
+	if oldParentKey != nil {
+		if oldParent, exists := cache.compositePodGroupStates[*oldParentKey]; exists {
+			oldParent.removeChild(key)
+			if oldParent.empty() {
+				delete(cache.compositePodGroupStates, *oldParentKey)
+			}
+		}
+	}
+
+	if !hasNewParent {
+		rootKey := key
+		cache.rootKeys[key] = &rootKey
+		cache.updateRootKeyRecursively(key, &rootKey, sets.New[fwk.EntityKey]())
+		return
+	}
+
+	newParent, parentExists := cache.compositePodGroupStates[newParentKey]
+	if !parentExists {
+		newParent = newCompositePodGroupState()
+		cache.compositePodGroupStates[newParentKey] = newParent
+	}
+	newParent.addChild(key)
+
+	parentRoot := cache.rootKeys[newParentKey]
+	cache.rootKeys[key] = parentRoot
+	cache.updateRootKeyRecursively(key, parentRoot, sets.New[fwk.EntityKey]())
 }
 
 // RemoveGenericPodGroup removes a generic pod group object from the cache.
@@ -1241,6 +1343,16 @@ func (cache *cacheImpl) RemoveGenericPodGroup(logger klog.Logger, gpg *framework
 			delete(cache.compositePodGroupStates, key)
 		}
 	}
+
+	delete(cache.rootKeys, key)
+
+	if key.Type == fwk.CompositePodGroupKeyType {
+		if cpgs, exists := cache.compositePodGroupStates[key]; exists {
+			for childKey := range cpgs.children {
+				cache.updateRootKeyRecursively(childKey, nil, sets.New[fwk.EntityKey]())
+			}
+		}
+	}
 }
 
 // BuildHierarchySnapshotFromPod returns a snapshot of the pod group hierarchy for the given pod.
@@ -1252,40 +1364,18 @@ func (cache *cacheImpl) BuildHierarchySnapshotFromPod(pod *v1.Pod) (fwk.PodGroup
 	cache.mu.RLock()
 	defer cache.mu.RUnlock()
 
-	// 1. Find root CPG/PG by traversing upwards
 	currentKey := fwk.PodGroupKey(pod.Namespace, *pod.Spec.SchedulingGroup.PodGroupName)
-	pgs, exists := cache.podGroupStates[currentKey]
+	rootKey, exists, err := cache.getRootKeyForGroupWithoutLock(currentKey)
+	if err != nil {
+		return nil, err
+	}
 	if !exists {
-		return nil, fmt.Errorf("pod group state not found for %s", currentKey.String())
+		return nil, fmt.Errorf("root group not found for %s", currentKey.String())
 	}
 
-	pg := pgs.podGroup
-	if pg == nil {
-		return nil, fmt.Errorf("pod group object not found in state for %s", currentKey.String())
-	}
-
-	if cache.compositePodGroupEnabled && pg.Spec.ParentCompositePodGroupName != nil {
-		currentKey = fwk.CompositePodGroupKey(pod.Namespace, *pg.Spec.ParentCompositePodGroupName)
-		for range schedulingv1alpha3.WorkloadMaxTreeDepth - 1 {
-			cpgs, exists := cache.compositePodGroupStates[currentKey]
-			if !exists {
-				return nil, fmt.Errorf("parent composite pod group state not found for %s", currentKey.String())
-			}
-			cpg := cpgs.compositePodGroup
-			if cpg == nil {
-				return nil, fmt.Errorf("composite pod group object not found in state for %s", currentKey.String())
-			}
-			if cpg.Spec.ParentCompositePodGroupName == nil {
-				break
-			}
-			currentKey = fwk.CompositePodGroupKey(pod.Namespace, *cpg.Spec.ParentCompositePodGroupName)
-		}
-	}
-
-	// 2. We have the root key. Now traverse downwards and update the snapshot.
 	snapshot := NewEmptySnapshot()
 	visited := sets.New[fwk.EntityKey]()
-	err := cache.buildPodGroupStateSnapshotTree(currentKey, snapshot, visited)
+	err = cache.buildPodGroupStateSnapshotTree(rootKey, snapshot, visited)
 	if err != nil {
 		return nil, err
 	}
@@ -1327,45 +1417,14 @@ func (cache *cacheImpl) buildPodGroupStateSnapshotTree(key fwk.EntityKey, snapsh
 }
 
 func (cache *cacheImpl) getRootKeyForGroupWithoutLock(key fwk.EntityKey) (fwk.EntityKey, bool, error) {
-	currentKey := key
-	visited := sets.New[fwk.EntityKey]()
-	for {
-		if visited.Has(currentKey) {
-			return fwk.EntityKey{}, false, fmt.Errorf("cycle detected in the hierarchy: %v", visited.UnsortedList())
-		}
-		visited.Insert(currentKey)
-
-		switch currentKey.Type {
-		case fwk.PodGroupKeyType:
-			pgs, exists := cache.podGroupStates[currentKey]
-			if !exists {
-				return fwk.EntityKey{}, false, nil
-			}
-			pg := pgs.podGroup
-			if pg == nil {
-				return fwk.EntityKey{}, false, nil
-			}
-			if !cache.compositePodGroupEnabled || pg.Spec.ParentCompositePodGroupName == nil {
-				return currentKey, true, nil
-			}
-			currentKey = fwk.CompositePodGroupKey(pg.Namespace, *pg.Spec.ParentCompositePodGroupName)
-		case fwk.CompositePodGroupKeyType:
-			cpgs, exists := cache.compositePodGroupStates[currentKey]
-			if !exists {
-				return fwk.EntityKey{}, false, nil
-			}
-			cpg := cpgs.compositePodGroup
-			if cpg == nil {
-				return fwk.EntityKey{}, false, nil
-			}
-			if cpg.Spec.ParentCompositePodGroupName == nil {
-				return currentKey, true, nil
-			}
-			currentKey = fwk.CompositePodGroupKey(cpg.Namespace, *cpg.Spec.ParentCompositePodGroupName)
-		case fwk.PodKeyType:
-			return fwk.EntityKey{}, false, fmt.Errorf("pod key type not supported in GetRootKeyForGroup for %s", currentKey.String())
-		}
+	if key.Type == fwk.PodKeyType {
+		return fwk.EntityKey{}, false, fmt.Errorf("pod key type not supported in GetRootKeyForGroup for %s", key.String())
 	}
+	rootKey, exists := cache.rootKeys[key]
+	if !exists || rootKey == nil {
+		return fwk.EntityKey{}, false, nil
+	}
+	return *rootKey, true, nil
 }
 
 // GetRootKeyForGroup returns the root key of the given EntityKey.

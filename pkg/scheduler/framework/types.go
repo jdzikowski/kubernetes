@@ -30,6 +30,7 @@ import (
 	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
 	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -1135,6 +1136,13 @@ func (gpg *GenericPodGroup) GetKey() fwk.EntityKey {
 		return fwk.PodGroupKey(gpg.PodGroup.Namespace, gpg.PodGroup.Name)
 	}
 	return fwk.CompositePodGroupKey(gpg.CompositePodGroup.Namespace, gpg.CompositePodGroup.Name)
+}
+
+func (gpg *GenericPodGroup) GetUID() types.UID {
+	if gpg.PodGroup != nil {
+		return gpg.PodGroup.UID
+	}
+	return gpg.CompositePodGroup.UID
 }
 
 // GetParentCompositePodGroupName returns the parent composite pod group name of the GenericPodGroup.

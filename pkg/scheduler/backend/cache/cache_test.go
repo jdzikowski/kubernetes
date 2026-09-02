@@ -3597,19 +3597,24 @@ func TestCache_GetRootKeyForGroup(t *testing.T) {
 		ctx := context.Background()
 		c := newCache(ctx, time.Second, nil, genericWorkloadEnabled, compositePodGroupEnabled)
 
-		pg1 := st.MakePodGroup().Name("pg1").Namespace("ns1").ParentCompositePodGroup("cpg1").Obj()
-		cpg1 := st.MakeCompositePodGroup().Name("cpg1").Namespace("ns1").ParentCompositePodGroup("cpg2").Obj()
 		cpg2 := st.MakeCompositePodGroup().Name("cpg2").Namespace("ns1").Obj()
+		cpg1 := st.MakeCompositePodGroup().Name("cpg1").Namespace("ns1").ParentCompositePodGroup("cpg2").Obj()
+		pg1 := st.MakePodGroup().Name("pg1").Namespace("ns1").ParentCompositePodGroup("cpg1").Obj()
 
-		c.podGroupStates[fwk.PodGroupKey("ns1", "pg1")] = &podGroupState{podGroupStateData: podGroupStateData{podGroup: pg1}}
-		c.compositePodGroupStates[fwk.CompositePodGroupKey("ns1", "cpg1")] = &compositePodGroupState{compositePodGroupStateData: compositePodGroupStateData{compositePodGroup: cpg1}}
-		c.compositePodGroupStates[fwk.CompositePodGroupKey("ns1", "cpg2")] = &compositePodGroupState{compositePodGroupStateData: compositePodGroupStateData{compositePodGroup: cpg2}}
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(cpg2))
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(cpg1))
+		c.AddGenericPodGroup(framework.NewGenericPodGroup(pg1))
 
-		c.podGroupStates[fwk.PodGroupKey("ns1", "pg_cycle")] = &podGroupState{podGroupStateData: podGroupStateData{podGroup: st.MakePodGroup().Name("pg_cycle").Namespace("ns1").ParentCompositePodGroup("cpg_cycle_1").Obj()}}
-		c.compositePodGroupStates[fwk.CompositePodGroupKey("ns1", "cpg_cycle_1")] = &compositePodGroupState{compositePodGroupStateData: compositePodGroupStateData{compositePodGroup: st.MakeCompositePodGroup().Name("cpg_cycle_1").Namespace("ns1").ParentCompositePodGroup("cpg_cycle_2").Obj()}}
-		c.compositePodGroupStates[fwk.CompositePodGroupKey("ns1", "cpg_cycle_2")] = &compositePodGroupState{compositePodGroupStateData: compositePodGroupStateData{compositePodGroup: st.MakeCompositePodGroup().Name("cpg_cycle_2").Namespace("ns1").ParentCompositePodGroup("cpg_cycle_1").Obj()}}
+		cpgCycle1 := st.MakeCompositePodGroup().Name("cpg_cycle_1").Namespace("ns1").ParentCompositePodGroup("cpg_cycle_2").Obj()
+		cpgCycle2 := st.MakeCompositePodGroup().Name("cpg_cycle_2").Namespace("ns1").ParentCompositePodGroup("cpg_cycle_1").Obj()
+		pgCycle := st.MakePodGroup().Name("pg_cycle").Namespace("ns1").ParentCompositePodGroup("cpg_cycle_1").Obj()
 
-		c.podGroupStates[fwk.PodGroupKey("ns1", "pg_missing_parent")] = &podGroupState{podGroupStateData: podGroupStateData{podGroup: st.MakePodGroup().Name("pg_missing_parent").Namespace("ns1").ParentCompositePodGroup("non-existent").Obj()}}
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(cpgCycle1))
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(cpgCycle2))
+		c.AddGenericPodGroup(framework.NewGenericPodGroup(pgCycle))
+
+		pgMissingParent := st.MakePodGroup().Name("pg_missing_parent").Namespace("ns1").ParentCompositePodGroup("non-existent").Obj()
+		c.AddGenericPodGroup(framework.NewGenericPodGroup(pgMissingParent))
 
 		pod1 := st.MakePod().Name("pod1").Namespace("ns1").PodGroupName("pg1").Obj()
 		c.podStates["ns1/pod1"] = &podState{pod: pod1}
@@ -3670,6 +3675,13 @@ func TestCache_GetRootKeyForGroup(t *testing.T) {
 			genericWorkloadEnabled:   true,
 			compositePodGroupEnabled: true,
 			key:                      fwk.PodGroupKey("ns1", "pg_cycle"),
+			wantOk:                   false,
+		},
+		{
+			name:                     "pod key type is not supported",
+			genericWorkloadEnabled:   true,
+			compositePodGroupEnabled: true,
+			key:                      fwk.PodKey("ns1", "pod1"),
 			wantErr:                  true,
 		},
 	}
@@ -3701,16 +3713,21 @@ func TestCache_GetRootGroup(t *testing.T) {
 		cpg1 := st.MakeCompositePodGroup().Name("cpg1").Namespace("ns1").ParentCompositePodGroup("cpg2").Obj()
 		cpg2 := st.MakeCompositePodGroup().Name("cpg2").Namespace("ns1").Obj()
 
-		c.podGroupStates[fwk.PodGroupKey("ns1", "pg1")] = &podGroupState{podGroupStateData: podGroupStateData{podGroup: pg1}}
-		c.podGroupStates[fwk.PodGroupKey("ns1", "pg_root")] = &podGroupState{podGroupStateData: podGroupStateData{podGroup: pgRoot}}
-		c.compositePodGroupStates[fwk.CompositePodGroupKey("ns1", "cpg1")] = &compositePodGroupState{compositePodGroupStateData: compositePodGroupStateData{compositePodGroup: cpg1}}
-		c.compositePodGroupStates[fwk.CompositePodGroupKey("ns1", "cpg2")] = &compositePodGroupState{compositePodGroupStateData: compositePodGroupStateData{compositePodGroup: cpg2}}
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(cpg2))
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(cpg1))
+		c.AddGenericPodGroup(framework.NewGenericPodGroup(pg1))
+		c.AddGenericPodGroup(framework.NewGenericPodGroup(pgRoot))
 
-		c.podGroupStates[fwk.PodGroupKey("ns1", "pg_cycle")] = &podGroupState{podGroupStateData: podGroupStateData{podGroup: st.MakePodGroup().Name("pg_cycle").Namespace("ns1").ParentCompositePodGroup("cpg_cycle_1").Obj()}}
-		c.compositePodGroupStates[fwk.CompositePodGroupKey("ns1", "cpg_cycle_1")] = &compositePodGroupState{compositePodGroupStateData: compositePodGroupStateData{compositePodGroup: st.MakeCompositePodGroup().Name("cpg_cycle_1").Namespace("ns1").ParentCompositePodGroup("cpg_cycle_2").Obj()}}
-		c.compositePodGroupStates[fwk.CompositePodGroupKey("ns1", "cpg_cycle_2")] = &compositePodGroupState{compositePodGroupStateData: compositePodGroupStateData{compositePodGroup: st.MakeCompositePodGroup().Name("cpg_cycle_2").Namespace("ns1").ParentCompositePodGroup("cpg_cycle_1").Obj()}}
+		cpgCycle1 := st.MakeCompositePodGroup().Name("cpg_cycle_1").Namespace("ns1").ParentCompositePodGroup("cpg_cycle_2").Obj()
+		cpgCycle2 := st.MakeCompositePodGroup().Name("cpg_cycle_2").Namespace("ns1").ParentCompositePodGroup("cpg_cycle_1").Obj()
+		pgCycle := st.MakePodGroup().Name("pg_cycle").Namespace("ns1").ParentCompositePodGroup("cpg_cycle_1").Obj()
 
-		c.podGroupStates[fwk.PodGroupKey("ns1", "pg_missing_parent")] = &podGroupState{podGroupStateData: podGroupStateData{podGroup: st.MakePodGroup().Name("pg_missing_parent").Namespace("ns1").ParentCompositePodGroup("non-existent").Obj()}}
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(cpgCycle1))
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(cpgCycle2))
+		c.AddGenericPodGroup(framework.NewGenericPodGroup(pgCycle))
+
+		pgMissingParent := st.MakePodGroup().Name("pg_missing_parent").Namespace("ns1").ParentCompositePodGroup("non-existent").Obj()
+		c.AddGenericPodGroup(framework.NewGenericPodGroup(pgMissingParent))
 
 		return c
 	}
@@ -3796,6 +3813,256 @@ func TestCache_GetRootGroup(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCache_HierarchyRootKeyCaching(t *testing.T) {
+	ctx := context.Background()
+	logger, _ := ktesting.NewTestContext(t)
+
+	t.Run("TopDownAddition", func(t *testing.T) {
+		c := newCache(ctx, time.Second, nil, true, true)
+
+		rootCPG := st.MakeCompositePodGroup().Name("root").Namespace("ns").Obj()
+		midCPG := st.MakeCompositePodGroup().Name("mid").Namespace("ns").ParentCompositePodGroup("root").Obj()
+		leafPG := st.MakePodGroup().Name("leaf").Namespace("ns").ParentCompositePodGroup("mid").Obj()
+
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(rootCPG))
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(midCPG))
+		c.AddGenericPodGroup(framework.NewGenericPodGroup(leafPG))
+
+		wantRoot := fwk.CompositePodGroupKey("ns", "root")
+		for _, key := range []fwk.EntityKey{
+			fwk.CompositePodGroupKey("ns", "root"),
+			fwk.CompositePodGroupKey("ns", "mid"),
+			fwk.PodGroupKey("ns", "leaf"),
+		} {
+			got, ok, err := c.GetRootKeyForGroup(key)
+			if err != nil || !ok || got != wantRoot {
+				t.Errorf("GetRootKeyForGroup(%v) = (%v, %v, %v), want (%v, true, nil)", key, got, ok, err, wantRoot)
+			}
+		}
+	})
+
+	t.Run("BottomUpAddition_SubtreeJoining", func(t *testing.T) {
+		c := newCache(ctx, time.Second, nil, true, true)
+
+		rootCPG := st.MakeCompositePodGroup().Name("root").Namespace("ns").Obj()
+		midCPG := st.MakeCompositePodGroup().Name("mid").Namespace("ns").ParentCompositePodGroup("root").Obj()
+		leafPG := st.MakePodGroup().Name("leaf").Namespace("ns").ParentCompositePodGroup("mid").Obj()
+
+		// 1. Add leaf first
+		c.AddGenericPodGroup(framework.NewGenericPodGroup(leafPG))
+		_, ok, _ := c.GetRootKeyForGroup(fwk.PodGroupKey("ns", "leaf"))
+		if ok {
+			t.Errorf("expected leaf to have no root yet")
+		}
+
+		// 2. Add mid next
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(midCPG))
+		_, ok, _ = c.GetRootKeyForGroup(fwk.CompositePodGroupKey("ns", "mid"))
+		if ok {
+			t.Errorf("expected mid to have no root yet")
+		}
+		_, ok, _ = c.GetRootKeyForGroup(fwk.PodGroupKey("ns", "leaf"))
+		if ok {
+			t.Errorf("expected leaf to still have no root yet")
+		}
+
+		// 3. Add root - joins the subtree
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(rootCPG))
+		wantRoot := fwk.CompositePodGroupKey("ns", "root")
+		for _, key := range []fwk.EntityKey{
+			fwk.CompositePodGroupKey("ns", "root"),
+			fwk.CompositePodGroupKey("ns", "mid"),
+			fwk.PodGroupKey("ns", "leaf"),
+		} {
+			got, ok, err := c.GetRootKeyForGroup(key)
+			if err != nil || !ok || got != wantRoot {
+				t.Errorf("after joining, GetRootKeyForGroup(%v) = (%v, %v, %v), want (%v, true, nil)", key, got, ok, err, wantRoot)
+			}
+		}
+	})
+
+	t.Run("RemoveAndReAddRootCPG", func(t *testing.T) {
+		c := newCache(ctx, time.Second, nil, true, true)
+
+		rootCPG := st.MakeCompositePodGroup().Name("root").Namespace("ns").Obj()
+		midCPG := st.MakeCompositePodGroup().Name("mid").Namespace("ns").ParentCompositePodGroup("root").Obj()
+		leafPG := st.MakePodGroup().Name("leaf").Namespace("ns").ParentCompositePodGroup("mid").Obj()
+
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(rootCPG))
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(midCPG))
+		c.AddGenericPodGroup(framework.NewGenericPodGroup(leafPG))
+
+		// Remove root
+		c.RemoveGenericPodGroup(logger, framework.NewGenericCompositePodGroup(rootCPG))
+
+		for _, key := range []fwk.EntityKey{
+			fwk.CompositePodGroupKey("ns", "root"),
+			fwk.CompositePodGroupKey("ns", "mid"),
+			fwk.PodGroupKey("ns", "leaf"),
+		} {
+			_, ok, err := c.GetRootKeyForGroup(key)
+			if err != nil || ok {
+				t.Errorf("after root removal, GetRootKeyForGroup(%v) returned ok=%v, want ok=false", key, ok)
+			}
+		}
+
+		// Re-add root
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(rootCPG))
+		wantRoot := fwk.CompositePodGroupKey("ns", "root")
+		for _, key := range []fwk.EntityKey{
+			fwk.CompositePodGroupKey("ns", "root"),
+			fwk.CompositePodGroupKey("ns", "mid"),
+			fwk.PodGroupKey("ns", "leaf"),
+		} {
+			got, ok, err := c.GetRootKeyForGroup(key)
+			if err != nil || !ok || got != wantRoot {
+				t.Errorf("after root re-add, GetRootKeyForGroup(%v) = (%v, %v, %v), want (%v, true, nil)", key, got, ok, err, wantRoot)
+			}
+		}
+	})
+
+	t.Run("RemoveIntermediateCPG_BranchIsolation", func(t *testing.T) {
+		c := newCache(ctx, time.Second, nil, true, true)
+
+		rootCPG := st.MakeCompositePodGroup().Name("root").Namespace("ns").Obj()
+		mid1 := st.MakeCompositePodGroup().Name("mid1").Namespace("ns").ParentCompositePodGroup("root").Obj()
+		leaf1 := st.MakePodGroup().Name("leaf1").Namespace("ns").ParentCompositePodGroup("mid1").Obj()
+		mid2 := st.MakeCompositePodGroup().Name("mid2").Namespace("ns").ParentCompositePodGroup("root").Obj()
+		leaf2 := st.MakePodGroup().Name("leaf2").Namespace("ns").ParentCompositePodGroup("mid2").Obj()
+
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(rootCPG))
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(mid1))
+		c.AddGenericPodGroup(framework.NewGenericPodGroup(leaf1))
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(mid2))
+		c.AddGenericPodGroup(framework.NewGenericPodGroup(leaf2))
+
+		// Remove intermediate mid1
+		c.RemoveGenericPodGroup(logger, framework.NewGenericCompositePodGroup(mid1))
+
+		// Branch 1 should be disconnected
+		for _, key := range []fwk.EntityKey{
+			fwk.CompositePodGroupKey("ns", "mid1"),
+			fwk.PodGroupKey("ns", "leaf1"),
+		} {
+			_, ok, _ := c.GetRootKeyForGroup(key)
+			if ok {
+				t.Errorf("expected branch 1 node %v to have ok=false after mid1 removal", key)
+			}
+		}
+
+		// Branch 2 and root should still be connected
+		wantRoot := fwk.CompositePodGroupKey("ns", "root")
+		for _, key := range []fwk.EntityKey{
+			fwk.CompositePodGroupKey("ns", "root"),
+			fwk.CompositePodGroupKey("ns", "mid2"),
+			fwk.PodGroupKey("ns", "leaf2"),
+		} {
+			got, ok, err := c.GetRootKeyForGroup(key)
+			if err != nil || !ok || got != wantRoot {
+				t.Errorf("branch 2 node GetRootKeyForGroup(%v) = (%v, %v, %v), want (%v, true, nil)", key, got, ok, err, wantRoot)
+			}
+		}
+	})
+
+	t.Run("UpdateCPGParent", func(t *testing.T) {
+		c := newCache(ctx, time.Second, nil, true, true)
+
+		root1 := st.MakeCompositePodGroup().Name("root1").Namespace("ns").UID("root1").Obj()
+		root2 := st.MakeCompositePodGroup().Name("root2").Namespace("ns").UID("root2").Obj()
+		mid := st.MakeCompositePodGroup().Name("mid").Namespace("ns").UID("mid-uid1").ParentCompositePodGroup("root1").Obj()
+		leaf := st.MakePodGroup().Name("leaf").Namespace("ns").UID("leaf-uid1").ParentCompositePodGroup("mid").Obj()
+
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(root1))
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(root2))
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(mid))
+		c.AddGenericPodGroup(framework.NewGenericPodGroup(leaf))
+
+		// Initially under root1
+		wantRoot1 := fwk.CompositePodGroupKey("ns", "root1")
+		got, ok, _ := c.GetRootKeyForGroup(fwk.PodGroupKey("ns", "leaf"))
+		if !ok || got != wantRoot1 {
+			t.Fatalf("expected leaf root to be root1, got %v", got)
+		}
+
+		// Update mid with same UID: parent changes are ignored because parent is immutable for same UID
+		sameUIDMid := st.MakeCompositePodGroup().Name("mid").Namespace("ns").UID("mid-uid1").ParentCompositePodGroup("root1").MinGroupCount(2).Obj()
+		c.UpdateGenericPodGroup(logger, framework.NewGenericCompositePodGroup(sameUIDMid))
+
+		for _, key := range []fwk.EntityKey{
+			fwk.CompositePodGroupKey("ns", "mid"),
+			fwk.PodGroupKey("ns", "leaf"),
+		} {
+			got, ok, err := c.GetRootKeyForGroup(key)
+			if err != nil || !ok || got != wantRoot1 {
+				t.Errorf("with same UID, GetRootKeyForGroup(%v) = (%v, %v, %v), want (%v, true, nil)", key, got, ok, err, wantRoot1)
+			}
+		}
+
+		// Update mid with new UID (object recreated): points to root2
+		updatedMid := st.MakeCompositePodGroup().Name("mid").Namespace("ns").UID("mid-uid2").ParentCompositePodGroup("root2").Obj()
+		c.UpdateGenericPodGroup(logger, framework.NewGenericCompositePodGroup(updatedMid))
+
+		wantRoot2 := fwk.CompositePodGroupKey("ns", "root2")
+		for _, key := range []fwk.EntityKey{
+			fwk.CompositePodGroupKey("ns", "mid"),
+			fwk.PodGroupKey("ns", "leaf"),
+		} {
+			got, ok, err := c.GetRootKeyForGroup(key)
+			if err != nil || !ok || got != wantRoot2 {
+				t.Errorf("after moving to root2 with new UID, GetRootKeyForGroup(%v) = (%v, %v, %v), want (%v, true, nil)", key, got, ok, err, wantRoot2)
+			}
+		}
+
+		// Update mid with new UID to have no parent (becomes a root itself)
+		rootMid := st.MakeCompositePodGroup().Name("mid").Namespace("ns").UID("mid-uid3").Obj()
+		c.UpdateGenericPodGroup(logger, framework.NewGenericCompositePodGroup(rootMid))
+
+		wantRootMid := fwk.CompositePodGroupKey("ns", "mid")
+		for _, key := range []fwk.EntityKey{
+			fwk.CompositePodGroupKey("ns", "mid"),
+			fwk.PodGroupKey("ns", "leaf"),
+		} {
+			got, ok, err := c.GetRootKeyForGroup(key)
+			if err != nil || !ok || got != wantRootMid {
+				t.Errorf("after making mid root with new UID, GetRootKeyForGroup(%v) = (%v, %v, %v), want (%v, true, nil)", key, got, ok, err, wantRootMid)
+			}
+		}
+	})
+
+	t.Run("RemoveLeafPG", func(t *testing.T) {
+		c := newCache(ctx, time.Second, nil, true, true)
+
+		rootCPG := st.MakeCompositePodGroup().Name("root").Namespace("ns").Obj()
+		midCPG := st.MakeCompositePodGroup().Name("mid").Namespace("ns").ParentCompositePodGroup("root").Obj()
+		leafPG := st.MakePodGroup().Name("leaf").Namespace("ns").ParentCompositePodGroup("mid").Obj()
+
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(rootCPG))
+		c.AddGenericPodGroup(framework.NewGenericCompositePodGroup(midCPG))
+		c.AddGenericPodGroup(framework.NewGenericPodGroup(leafPG))
+
+		// Remove leaf
+		c.RemoveGenericPodGroup(logger, framework.NewGenericPodGroup(leafPG))
+
+		// Leaf should be removed
+		_, ok, _ := c.GetRootKeyForGroup(fwk.PodGroupKey("ns", "leaf"))
+		if ok {
+			t.Errorf("expected leaf to be removed from root key cache")
+		}
+
+		// Mid and root unaffected
+		wantRoot := fwk.CompositePodGroupKey("ns", "root")
+		for _, key := range []fwk.EntityKey{
+			fwk.CompositePodGroupKey("ns", "root"),
+			fwk.CompositePodGroupKey("ns", "mid"),
+		} {
+			got, ok, err := c.GetRootKeyForGroup(key)
+			if err != nil || !ok || got != wantRoot {
+				t.Errorf("GetRootKeyForGroup(%v) = (%v, %v, %v), want (%v, true, nil)", key, got, ok, err, wantRoot)
+			}
+		}
+	})
 }
 
 func TestCache_HavePodsWithRequiredNonHostScopedAntiAffinity(t *testing.T) {
