@@ -547,6 +547,8 @@ func (sched *Scheduler) podGroupSchedulingDefaultAlgorithm(ctx context.Context, 
 		placementProgress.Remaining--
 		if podResult.status.IsSuccess() {
 			placementProgress.Scheduled++
+		} else {
+			placementProgress.Unschedulable++
 		}
 		proceed, placementFeasibleStatus := podGroupPotentiallyFeasible(ctx, schedFwk, placementCycleState, podGroupInfo, placementProgress)
 		result.status = placementFeasibleStatus
@@ -1592,6 +1594,8 @@ func (sched *Scheduler) compositePodGroupSchedulingDefaultAlgorithm(ctx context.
 		placementProgress.Remaining--
 		if childResult.status.IsSuccess() {
 			placementProgress.Scheduled++
+		} else {
+			placementProgress.Unschedulable++
 		}
 		proceed, placementFeasibleStatus = podGroupPotentiallyFeasible(ctx, schedFwk, placementCycleState, podGroupInfo, placementProgress)
 		if !proceed {

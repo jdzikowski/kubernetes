@@ -1320,14 +1320,18 @@ func TestPlacementFeasible(t *testing.T) {
 
 					pl := p.(*GangScheduling)
 					scheduled := tc.initialScheduledCount
+					unschedulable := 0
 					for i, code := range tc.podStatuses {
 						if code == fwk.Success {
 							scheduled++
+						} else {
+							unschedulable++
 						}
 
 						args := fwk.PlacementProgress{
-							Remaining: tc.childrenCount - (i + 1),
-							Scheduled: scheduled,
+							Remaining:     tc.childrenCount - (i + 1),
+							Scheduled:     scheduled,
+							Unschedulable: unschedulable,
 						}
 						gotStatus := pl.PlacementFeasible(ctx, cycleState, pgInfo, args)
 
