@@ -29,6 +29,7 @@ import (
 	schedulingapi "k8s.io/api/scheduling/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	clientset "k8s.io/client-go/kubernetes"
@@ -54,6 +55,7 @@ func TestPodGroupScheduling(t *testing.T) {
 		PodGroupTemplate(st.MakePodGroupTemplate().Name("t1").MinCount(3).Obj()).
 		PodGroupTemplate(st.MakePodGroupTemplate().Name("t2").BasicPolicy().Obj()).
 		PodGroupTemplate(st.MakePodGroupTemplate().Name("t-mid").MinCount(2).Obj()).
+		PodGroupTemplate(st.MakePodGroupTemplate().Name("t-gang-4").MinCount(4).Obj()).
 		PodGroupTemplate(st.MakePodGroupTemplate().Name("t-mutable").MinCount(5).Obj()).
 		Obj()
 	otherWorkload := st.MakeWorkload().Name("other-workload").
@@ -62,12 +64,35 @@ func TestPodGroupScheduling(t *testing.T) {
 
 	gangPodGroup := st.MakePodGroup().Name("pg1").WorkloadRef("workload", "t1").
 		Priority(100).MinCount(3).Obj()
+	gangPG2 := st.MakePodGroup().Name("pg1").WorkloadRef("workload", "t-mid").
+		Priority(100).MinCount(2).Obj()
+	gangPG4 := st.MakePodGroup().Name("pg1").WorkloadRef("workload", "t-gang-4").
+		Priority(100).MinCount(4).Obj()
 
 	otherGangPodGroup := st.MakePodGroup().Name("pg2").WorkloadRef("other-workload", "t").
 		Priority(100).MinCount(3).Obj()
 
 	basicPodGroup := st.MakePodGroup().Name("pg1").WorkloadRef("workload", "t2").Priority(100).BasicPolicy().Obj()
 	podGroupWithMinCount5 := st.MakePodGroup().Name("pg-mutable").WorkloadRef("workload", "t-mutable").Priority(100).MinCount(5).Obj()
+
+	preferredNodeAffinity := func(key, val string) *v1.NodeAffinity {
+		return &v1.NodeAffinity{
+			PreferredDuringSchedulingIgnoredDuringExecution: []v1.PreferredSchedulingTerm{
+				{
+					Weight: 100,
+					Preference: v1.NodeSelectorTerm{
+						MatchExpressions: []v1.NodeSelectorRequirement{
+							{
+								Key:      key,
+								Operator: v1.NodeSelectorOpIn,
+								Values:   []string{val},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
 
 	mutP1 := st.MakePod().Name("mut-p1").Req(map[v1.ResourceName]string{v1.ResourceCPU: "1"}).Container("image").PodGroupName("pg-mutable").Priority(100).Obj()
 	mutP2 := st.MakePod().Name("mut-p2").Req(map[v1.ResourceName]string{v1.ResourceCPU: "1"}).Container("image").PodGroupName("pg-mutable").Priority(100).Obj()
@@ -124,6 +149,7 @@ func TestPodGroupScheduling(t *testing.T) {
 	tests := []struct {
 		name                                  string
 		enableTopologyAwareWorkloadScheduling []bool
+		nodes                                 []*v1.Node
 		steps                                 []stepsframework.Step
 	}{
 		{
@@ -637,6 +663,430 @@ func TestPodGroupScheduling(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "gang with heterogeneous resource requests schedules across multiple nodes",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node1").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "3"}).Obj(),
+				st.MakeNode().Name("node2").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).Obj(),
+			},
+			steps: []stepsframework.Step{
+				{
+					Name:           "Create gang PodGroup with minCount=3",
+					CreatePodGroup: gangPodGroup,
+				},
+				// Use CreatePodsInOrder because otherwise LeastAllocated would place workers on node1.
+				{
+					Name: "Create one large leader pod and two smaller worker pods in order",
+					CreatePodsInOrder: []*v1.Pod{
+						st.MakePod().Name("leader").Req(map[v1.ResourceName]string{v1.ResourceCPU: "3"}).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+						st.MakePod().Name("worker1").Req(map[v1.ResourceName]string{v1.ResourceCPU: "1"}).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+						st.MakePod().Name("worker2").Req(map[v1.ResourceName]string{v1.ResourceCPU: "1"}).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+					},
+				},
+				{
+					Name:                 "Verify all gang pods schedule",
+					WaitForPodsScheduled: []string{"leader", "worker1", "worker2"},
+				},
+				{
+					Name: "Verify leader lands on node1",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods:  []string{"leader"},
+						Nodes: sets.New("node1"),
+					},
+				},
+				{
+					Name: "Verify workers land on node2",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods:  []string{"worker1", "worker2"},
+						Nodes: sets.New("node2"),
+					},
+				},
+			},
+		},
+		{
+			name: "failed gang with partially fitting heterogeneous pods does not block standalone pod",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node1").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).Obj(),
+				st.MakeNode().Name("node2").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).Obj(),
+			},
+			steps: []stepsframework.Step{
+				{
+					Name:           "Create gang PodGroup with minCount=3",
+					CreatePodGroup: gangPodGroup,
+				},
+				{
+					Name: "Create two 2-CPU pods that fit and one 4-CPU pod that does not",
+					CreatePodsInOrder: []*v1.Pod{
+						st.MakePod().Name("small1").Req(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+						st.MakePod().Name("small2").Req(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+						st.MakePod().Name("large").Req(map[v1.ResourceName]string{v1.ResourceCPU: "4"}).
+							Tolerations([]v1.Toleration{{Key: "dedicated", Value: "large", Effect: v1.TaintEffectNoSchedule}}).
+							Container("image").PodGroupName("pg1").Priority(100).Obj(),
+					},
+				},
+				{
+					Name:                     "Verify all gang pods become unschedulable",
+					WaitForPodsUnschedulable: []string{"small1", "small2", "large"},
+				},
+				{
+					Name: "Verify PodGroup condition is Unschedulable",
+					WaitForGroupsUnschedulable: &stepsframework.Groups{
+						PodGroups: []string{"pg1"},
+					},
+				},
+				{
+					Name: "Create standalone pod to verify small1 and small2 did not reserve node capacity",
+					CreatePods: []*v1.Pod{
+						st.MakePod().Name("standalone").Req(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).Container("image").ZeroTerminationGracePeriod().Priority(100).Obj(),
+					},
+				},
+				{
+					Name:                 "Verify standalone pod schedules",
+					WaitForPodsScheduled: []string{"standalone"},
+				},
+				{
+					Name:       "Delete standalone pod",
+					DeletePods: []string{"standalone"},
+				},
+				{
+					// node3 is tainted so LeastAllocated does not place small1 on node3 when the gang retries.
+					Name: "Add a 4-CPU tainted node so the large gang member can fit",
+					CreateNodes: []*v1.Node{
+						st.MakeNode().Name("node3").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "4"}).
+							Taints([]v1.Taint{{Key: "dedicated", Value: "large", Effect: v1.TaintEffectNoSchedule}}).Obj(),
+					},
+				},
+				{
+					Name:                 "Verify all gang pods schedule after node3 is added",
+					WaitForPodsScheduled: []string{"small1", "small2", "large"},
+				},
+				{
+					Name: "Verify small pods are assigned to node1 and node2",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods:  []string{"small1", "small2"},
+						Nodes: sets.New("node1", "node2"),
+					},
+				},
+				{
+					Name: "Verify large pod is assigned to node3",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods:  []string{"large"},
+						Nodes: sets.New("node3"),
+					},
+				},
+			},
+		},
+		{
+			name: "gang with minCount less than total schedules fitting heterogeneous subset past an unschedulable pod",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node1").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "4"}).Obj(),
+			},
+			steps: []stepsframework.Step{
+				{
+					Name:           "Create gang PodGroup with minCount=2",
+					CreatePodGroup: gangPG2,
+				},
+				{
+					Name: "Create 2-CPU, 4-CPU, and 2-CPU pods in order",
+					CreatePodsInOrder: []*v1.Pod{
+						st.MakePod().Name("p1").Req(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+						st.MakePod().Name("p3-large").Req(map[v1.ResourceName]string{v1.ResourceCPU: "4"}).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+						st.MakePod().Name("p2").Req(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+					},
+				},
+				{
+					Name:                 "Verify the two fitting pods schedule to satisfy minCount=2",
+					WaitForPodsScheduled: []string{"p1", "p2"},
+				},
+				{
+					Name:                     "Verify the 4-CPU pod is marked unschedulable",
+					WaitForPodsUnschedulable: []string{"p3-large"},
+				},
+				{
+					Name: "Verify p1 and p2 are assigned to node1",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods:  []string{"p1", "p2"},
+						Nodes: sets.New("node1"),
+					},
+				},
+				{
+					Name: "Add a second 4-CPU node",
+					CreateNodes: []*v1.Node{
+						st.MakeNode().Name("node2").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "4"}).Obj(),
+					},
+				},
+				{
+					Name:                 "Verify p3-large schedules on the new node",
+					WaitForPodsScheduled: []string{"p1", "p2", "p3-large"},
+				},
+				{
+					Name: "Verify p3-large is assigned to node2",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods:  []string{"p3-large"},
+						Nodes: sets.New("node2"),
+					},
+				},
+			},
+		},
+		{
+			name: "basic policy schedules fitting heterogeneous pods past an unschedulable pod in the middle",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node1").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "3"}).Obj(),
+			},
+			steps: []stepsframework.Step{
+				{
+					Name:           "Create Basic PodGroup",
+					CreatePodGroup: basicPodGroup,
+				},
+				{
+					Name: "Create 1-CPU, 4-CPU (unfittable), and 2-CPU pods in order",
+					CreatePodsInOrder: []*v1.Pod{
+						st.MakePod().Name("p-small").Req(map[v1.ResourceName]string{v1.ResourceCPU: "1"}).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+						st.MakePod().Name("p-large").Req(map[v1.ResourceName]string{v1.ResourceCPU: "4"}).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+						st.MakePod().Name("p-med").Req(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+					},
+				},
+				{
+					Name:                 "Verify p-small and p-med schedule on node1 despite p-large failing in between",
+					WaitForPodsScheduled: []string{"p-small", "p-med"},
+				},
+				{
+					Name:                     "Verify p-large becomes unschedulable",
+					WaitForPodsUnschedulable: []string{"p-large"},
+				},
+				{
+					Name: "Verify p-small and p-med are assigned to node1",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods:  []string{"p-small", "p-med"},
+						Nodes: sets.New("node1"),
+					},
+				},
+				{
+					Name: "Add a 4-CPU node for p-large",
+					CreateNodes: []*v1.Node{
+						st.MakeNode().Name("node2").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "4"}).Obj(),
+					},
+				},
+				{
+					Name:                 "Verify p-large schedules after node2 is added",
+					WaitForPodsScheduled: []string{"p-small", "p-med", "p-large"},
+				},
+				{
+					Name: "Verify p-large is assigned to node2",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods:  []string{"p-large"},
+						Nodes: sets.New("node2"),
+					},
+				},
+			},
+		},
+		{
+			name: "gang with distinct node selectors and tolerations per pod schedules each pod onto its matching node",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node-cpu").Label("pool", "cpu").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).Obj(),
+				st.MakeNode().Name("node-gpu").Label("pool", "gpu").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "8"}).
+					Taints([]v1.Taint{{Key: "gpu", Value: "true", Effect: v1.TaintEffectNoSchedule}}).Obj(),
+			},
+			steps: []stepsframework.Step{
+				{
+					Name:           "Create gang PodGroup with minCount=4",
+					CreatePodGroup: gangPG4,
+				},
+				{
+					Name: "Create pods targeting cpu, gpu (with toleration) and mem pools, plus one unconstrained pod",
+					CreatePodsInOrder: []*v1.Pod{
+						st.MakePod().Name("p-cpu").Req(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).NodeSelector(map[string]string{"pool": "cpu"}).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+						st.MakePod().Name("p-gpu").Req(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).NodeSelector(map[string]string{"pool": "gpu"}).
+							Tolerations([]v1.Toleration{{Key: "gpu", Value: "true", Effect: v1.TaintEffectNoSchedule}}).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+						st.MakePod().Name("p-mem").Req(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).NodeSelector(map[string]string{"pool": "mem"}).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+						// LeastAllocated would pick the mostly empty node-gpu; only its taint keeps p-any off it.
+						st.MakePod().Name("p-any").Req(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+					},
+				},
+				{
+					Name:                     "Verify all gang pods are unschedulable while node-mem is missing",
+					WaitForPodsUnschedulable: []string{"p-cpu", "p-gpu", "p-mem", "p-any"},
+				},
+				{
+					Name: "Verify PodGroup condition is Unschedulable",
+					WaitForGroupsUnschedulable: &stepsframework.Groups{
+						PodGroups: []string{"pg1"},
+					},
+				},
+				{
+					Name: "Add node-mem matching p-mem's selector",
+					CreateNodes: []*v1.Node{
+						st.MakeNode().Name("node-mem").Label("pool", "mem").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "4"}).Obj(),
+					},
+				},
+				{
+					Name:                 "Verify all gang pods schedule",
+					WaitForPodsScheduled: []string{"p-cpu", "p-gpu", "p-mem", "p-any"},
+				},
+				{
+					Name: "Verify p-cpu is assigned to node-cpu",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods:  []string{"p-cpu"},
+						Nodes: sets.New("node-cpu"),
+					},
+				},
+				{
+					Name: "Verify p-gpu is assigned to node-gpu",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods:  []string{"p-gpu"},
+						Nodes: sets.New("node-gpu"),
+					},
+				},
+				{
+					Name: "Verify p-mem and the unconstrained p-any are assigned to node-mem",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods:  []string{"p-mem", "p-any"},
+						Nodes: sets.New("node-mem"),
+					},
+				},
+			},
+		},
+		{
+			// Documents a known limitation of the sequential algorithm (KEP-4671, "Algorithm Limitations"):
+			// flex prefers node2, so evaluating it first leaves no node for strict, although a placement exists.
+			name: "flexible pod evaluated before constrained pod leaves the gang unschedulable",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node1").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).Obj(),
+				st.MakeNode().Name("node2").Label("special", "true").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).Obj(),
+			},
+			steps: []stepsframework.Step{
+				{
+					Name:           "Create gang PodGroup with minCount=2",
+					CreatePodGroup: gangPG2,
+				},
+				{
+					Name: "Enqueue flexible pod (prefers special=true) before constrained pod (requires special=true)",
+					CreatePodsInOrder: []*v1.Pod{
+						st.MakePod().Name("flex").Req(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).
+							NodeAffinity(preferredNodeAffinity("special", "true")).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+						st.MakePod().Name("strict").Req(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).
+							NodeSelector(map[string]string{"special": "true"}).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+					},
+				},
+				{
+					Name:                     "Verify the gang is unschedulable",
+					WaitForPodsUnschedulable: []string{"flex", "strict"},
+				},
+				{
+					Name: "Verify PodGroup condition is Unschedulable",
+					WaitForGroupsUnschedulable: &stepsframework.Groups{
+						PodGroups: []string{"pg1"},
+					},
+				},
+			},
+		},
+		{
+			name: "constrained pod evaluated before flexible pod schedules the gang",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node1").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).Obj(),
+				st.MakeNode().Name("node2").Label("special", "true").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).Obj(),
+			},
+			steps: []stepsframework.Step{
+				{
+					Name:           "Create gang PodGroup with minCount=2",
+					CreatePodGroup: gangPG2,
+				},
+				{
+					Name: "Enqueue constrained pod (requires special=true) before flexible pod (prefers special=true)",
+					CreatePodsInOrder: []*v1.Pod{
+						st.MakePod().Name("strict").Req(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).
+							NodeSelector(map[string]string{"special": "true"}).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+						st.MakePod().Name("flex").Req(map[v1.ResourceName]string{v1.ResourceCPU: "2"}).
+							NodeAffinity(preferredNodeAffinity("special", "true")).Container("image").PodGroupName("pg1").Priority(100).Obj(),
+					},
+				},
+				{
+					Name:                 "Verify the gang schedules",
+					WaitForPodsScheduled: []string{"strict", "flex"},
+				},
+				{
+					Name: "Verify strict lands on node2",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods:  []string{"strict"},
+						Nodes: sets.New("node2"),
+					},
+				},
+				{
+					Name: "Verify flex falls back to node1",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods:  []string{"flex"},
+						Nodes: sets.New("node1"),
+					},
+				},
+			},
+		},
+		{
+			// Documents a known limitation for intra-group dependencies (KEP-4671, "Algorithm Limitations"):
+			// the worker is evaluated before its affinity target is assumed, so the gang can't be placed.
+			name: "gang is unschedulable because worker is evaluated before its required PodAffinity target",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node1").Label(v1.LabelHostname, "node1").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "4"}).Obj(),
+			},
+			steps: []stepsframework.Step{
+				{
+					Name:           "Create gang PodGroup with minCount=2",
+					CreatePodGroup: gangPG2,
+				},
+				{
+					Name: "Enqueue worker (requiring PodAffinity to role=leader) before leader",
+					CreatePodsInOrder: []*v1.Pod{
+						st.MakePod().Name("worker").Req(map[v1.ResourceName]string{v1.ResourceCPU: "1"}).
+							PodAffinityIn("role", v1.LabelHostname, []string{"leader"}, st.PodAffinityWithRequiredReq).
+							Container("image").PodGroupName("pg1").Priority(100).Obj(),
+						st.MakePod().Name("leader").Req(map[v1.ResourceName]string{v1.ResourceCPU: "1"}).
+							Label("role", "leader").Container("image").PodGroupName("pg1").Priority(100).Obj(),
+					},
+				},
+				{
+					Name:                     "Verify the gang is unschedulable",
+					WaitForPodsUnschedulable: []string{"worker", "leader"},
+				},
+				{
+					Name: "Verify PodGroup condition is Unschedulable",
+					WaitForGroupsUnschedulable: &stepsframework.Groups{
+						PodGroups: []string{"pg1"},
+					},
+				},
+			},
+		},
+		{
+			name: "gang is scheduled because required PodAffinity target is evaluated before the worker",
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node1").Label(v1.LabelHostname, "node1").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "4"}).Obj(),
+			},
+			steps: []stepsframework.Step{
+				{
+					Name:           "Create gang PodGroup with minCount=2",
+					CreatePodGroup: gangPG2,
+				},
+				{
+					Name: "Enqueue leader before worker (requiring PodAffinity to role=leader)",
+					CreatePodsInOrder: []*v1.Pod{
+						st.MakePod().Name("leader").Req(map[v1.ResourceName]string{v1.ResourceCPU: "1"}).
+							Label("role", "leader").Container("image").PodGroupName("pg1").Priority(100).Obj(),
+						st.MakePod().Name("worker").Req(map[v1.ResourceName]string{v1.ResourceCPU: "1"}).
+							PodAffinityIn("role", v1.LabelHostname, []string{"leader"}, st.PodAffinityWithRequiredReq).
+							Container("image").PodGroupName("pg1").Priority(100).Obj(),
+					},
+				},
+				{
+					Name:                 "Verify both pods schedule",
+					WaitForPodsScheduled: []string{"leader", "worker"},
+				},
+				{
+					Name: "Verify both pods are co-located on node1",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods:  []string{"leader", "worker"},
+						Nodes: sets.New("node1"),
+					},
+				},
+			},
+		},
 	}
 
 	// CompositePodGroup requires TopologyAwareWorkloadScheduling, so (TAS off, CPG on) can't be enabled.
@@ -671,10 +1121,14 @@ func TestPodGroupScheduling(t *testing.T) {
 						cleanupPodGroupTestResources(t, sharedAPICtx.Ctx, testCtx.ClientSet, ns)
 					})
 
+					nodes := []*v1.Node{node}
+					if len(tt.nodes) > 0 {
+						nodes = tt.nodes
+					}
 					commonSteps := []stepsframework.Step{
 						{
 							Name:        "Create Nodes",
-							CreateNodes: []*v1.Node{node},
+							CreateNodes: nodes,
 						},
 						{
 							Name:            "Create workloads",
